@@ -73,18 +73,68 @@ class _DriverHolder:
             self._driver = None
 
 
-def _probe_urls(driver, urls: list[str]) -> str:
-    """Load each URL, let the SPA settle, and report where we landed plus any
-    nav-ish links. Used to discover the real SEDAR+ entry points."""
+def _dump_structure(driver) -> str:
+    """Summarise the current page: url, title, inputs, buttons, table headers."""
+    info = driver.execute_script(
+        """
+        const txt = el => (el.textContent||'').trim().slice(0,40);
+        return {
+          url: location.href,
+          title: document.title,
+          inputs: [...document.querySelectorAll('input,select')]
+            .map(i=>[i.tagName, i.getAttribute('name')||'', i.getAttribute('placeholder')||i.getAttribute('aria-label')||''])
+            .slice(0,30),
+          buttons: [...document.querySelectorAll('button,a.button,input[type=submit]')]
+            .map(txt).filter(Boolean).slice(0,30),
+          headers: [...document.querySelectorAll('th')].map(txt).filter(Boolean).slice(0,20),
+          body: (document.body.innerText||'').replace(/\\s+/g,' ').slice(0,300),
+        };
+        """
+    )
+    import json as _j
+    return _j.dumps(info, indent=1)
+
+
+def _probe_urls(driver, params) -> str:
+    """Two modes:
+      {"urls": [...]}                         -> GET each, report landing+links.
+      {"flow": {"bootstrap": url,             -> GET bootstrap (session), then
+                "clicks": ["link text", ...], click each link/button by text,
+                "search": bool}}              optionally click Search, then dump.
+    """
     import time
 
+    if isinstance(params, dict) and params.get("flow"):
+        f = params["flow"]
+        steps = []
+        driver.get(f["bootstrap"])
+        time.sleep(10)
+        steps.append(f"bootstrap -> {driver.current_url} ({driver.title})")
+        for text in f.get("clicks", []):
+            clicked = driver.execute_script(
+                """const t=arguments[0].toLowerCase();
+                   const els=[...document.querySelectorAll('a,button')];
+                   const el=els.find(e=>(e.textContent||'').trim().toLowerCase().includes(t));
+                   if(el){el.scrollIntoView();el.click();return true;} return false;""",
+                text,
+            )
+            time.sleep(9)
+            steps.append(f"click '{text}' -> {clicked} -> {driver.current_url}")
+        if f.get("search"):
+            driver.execute_script(
+                """const b=[...document.querySelectorAll('button')]
+                     .find(e=>(e.textContent||'').trim()==='Search'); if(b)b.click();"""
+            )
+            time.sleep(9)
+            steps.append("clicked Search")
+        return "\n".join(steps) + "\n\nSTRUCTURE:\n" + _dump_structure(driver)
+
+    urls = params.get("urls", []) if isinstance(params, dict) else params
     report = []
     for url in urls[:6]:
         try:
             driver.get(url)
             time.sleep(10)
-            cur = driver.current_url
-            title = driver.title
             links = driver.execute_script(
                 """return [...document.querySelectorAll('a,button')]
                      .map(a=>[(a.textContent||'').trim().slice(0,40), a.getAttribute('href')||''])
@@ -93,7 +143,7 @@ def _probe_urls(driver, urls: list[str]) -> str:
             )
             body = driver.find_element("tag name", "body").text[:200].replace("\n", " ")
             report.append(
-                f"GET {url}\n  -> {cur}\n  title={title}\n  body={body}\n  links={links}"
+                f"GET {url}\n  -> {driver.current_url}\n  title={driver.title}\n  body={body}\n  links={links}"
             )
         except Exception as e:
             report.append(f"GET {url} -> ERROR {e}")
@@ -115,7 +165,7 @@ def _run_job(job_id: int, holder: _DriverHolder) -> None:
 
         if job.kind == KIND_PROBE:
             params = json.loads(job.params or "{}")
-            job.message = _probe_urls(holder.get(), params.get("urls", []))
+            job.message = _probe_urls(holder.get(), params)
             db.commit()
             return
 
