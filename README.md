@@ -158,6 +158,24 @@ Key env vars: `DATA_DIR` (default `/data` in Docker), `DATABASE_URL`, `CHROME_BI
 > path *is* verified; expect to tune the text-based selectors in `lookup.py` on first
 > live run.
 
+### Shaking out the live selectors (`smoke`)
+
+To validate the resolve→search→download path against the live site for one company
+(synchronously, without the worker/queue), use the `smoke` command. It prints each step
+so you can see exactly where a selector needs tuning:
+
+```bash
+# Default: verified profile.html?id= path (Homerun Resources), 1 batch:
+xvfb-run -a -s "-screen 0 1920x1400x24" python -m app.manage smoke
+
+# Test the Number bridge (no profile id) for any issuer:
+xvfb-run -a -s "-screen 0 1920x1400x24" \
+  python -m app.manage smoke --profile-id '' --number 000003771 --name "Some Co"
+```
+
+It exits 0 if a zip downloaded, 2 if nothing landed (selector/popup problem), and
+reports the files in `data/downloads/<number>/`.
+
 ## CLI (lower-level, no web app)
 
 ```bash
