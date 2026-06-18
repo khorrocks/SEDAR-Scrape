@@ -38,6 +38,48 @@ def _doc_count(db, company_id: int) -> int:
     return db.scalar(
         select(func.count(Document.id)).where(Document.company_id == company_id)
     ) or 0
+
+
+def _company_count(db) -> int:
+    return db.scalar(select(func.count(Company.id))) or 0
+
+
+def _with_recovery(db, job, holder, do_work, count_fn):
+    """Run do_work(driver) with self-healing retries: rebuild the browser on
+    failure (frees memory / clears popup state) and resume. A Radware/perfdrive
+    block is IP-based and usually temporary, so back off longer and don't count
+    it as a hard no-progress stall. Plain no-progress failures stop after a few
+    tries. do_work must be idempotent/resumable; count_fn measures progress."""
+    import traceback as _tb
+
+    attempts = 0
+    stalls = 0
+    while True:
+        attempts += 1
+        before = count_fn()
+        try:
+            return do_work(holder.get())
+        except Exception as exc:
+            progressed = count_fn() > before
+            err = "".join(_tb.format_exception_only(type(exc), exc)).strip()
+            blocked = "perfdrive" in err.lower() or "radware" in err.lower()
+            if progressed:
+                stalls = 0
+            elif not blocked:
+                stalls += 1
+            if attempts >= settings.max_download_attempts or stalls >= 3:
+                raise
+            wait = settings.radware_backoff_seconds if blocked else 5
+            kind_msg = (
+                f"Radware throttling the IP — backing off {int(wait)}s"
+                if blocked else "recovering after a failure"
+            )
+            print(f"[worker] job {job.id} {kind_msg} (attempt {attempts}, "
+                  f"progressed={progressed}): {err}", flush=True)
+            job.message = f"{kind_msg} (attempt {attempts})…"
+            db.commit()
+            holder.reset()
+            time.sleep(wait)
 from . import queue as q
 from . import scraper
 
@@ -204,12 +246,17 @@ def _run_job(job_id: int, holder: _DriverHolder) -> None:
 
         if job.kind == KIND_ENUMERATE:
             params = json.loads(job.params or "{}")
-            n = scraper.enumerate_catalog(
-                db, holder.get(),
-                profile_type=params.get("profile_type", "Company"),
-                max_pages=params.get("max_pages"),
+            n = _with_recovery(
+                db, job, holder,
+                lambda d: scraper.enumerate_catalog(
+                    db, d,
+                    profile_type=params.get("profile_type"),
+                    max_pages=params.get("max_pages"),
+                    progress=progress,
+                ),
+                count_fn=lambda: _company_count(db),
             )
-            job.message = f"catalog upserted {n} companies"
+            job.message = f"catalog now holds {_company_count(db)} companies ({n} seen this pass)"
             db.commit()
             return
 
@@ -218,44 +265,11 @@ def _run_job(job_id: int, holder: _DriverHolder) -> None:
             raise RuntimeError(f"job {job.id} references missing company {job.company_id}")
 
         only_new = job.kind == KIND_RECHECK
-        # The browser degrades after several big-zip downloads (popup churn /
-        # memory). Retry with a FRESH browser on failure; download_company
-        # resumes by skipping documents already saved, so each attempt makes
-        # forward progress until the company is complete.
-        attempts = 0
-        stalls = 0
-        while True:
-            attempts += 1
-            saved_before = _doc_count(db, company.id)
-            try:
-                result = scraper.download_company(
-                    db, holder.get(), company, only_new=only_new, progress=progress
-                )
-                break
-            except Exception as exc:
-                progressed = _doc_count(db, company.id) > saved_before
-                err = "".join(traceback.format_exception_only(type(exc), exc)).strip()
-                blocked = "perfdrive" in err.lower() or "radware" in err.lower()
-                # A Radware block is IP-based and usually temporary -- back off
-                # for a while (don't count it as a hard no-progress stall). Plain
-                # no-progress failures stop after a few tries.
-                if progressed:
-                    stalls = 0
-                elif not blocked:
-                    stalls += 1
-                if attempts >= settings.max_download_attempts or stalls >= 3:
-                    raise
-                wait = settings.radware_backoff_seconds if blocked else 5
-                kind_msg = (
-                    f"Radware throttling the IP — backing off {wait}s"
-                    if blocked else "recovering after a batch failure"
-                )
-                print(f"[worker] job {job.id} {kind_msg} (attempt {attempts}, "
-                      f"progressed={progressed}): {err}")
-                job.message = f"{kind_msg} (attempt {attempts})…"
-                db.commit()
-                holder.reset()  # fresh Chrome frees memory and clears popup state
-                time.sleep(wait)
+        result = _with_recovery(
+            db, job, holder,
+            lambda d: scraper.download_company(db, d, company, only_new=only_new, progress=progress),
+            count_fn=lambda: _doc_count(db, company.id),
+        )
         job.message = (
             f"{result['new_documents']} new doc(s) in {result['batches']} batch(es) "
             f"this pass; {result['total_reported']} reported on site"

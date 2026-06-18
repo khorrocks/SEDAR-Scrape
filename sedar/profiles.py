@@ -82,6 +82,19 @@ def run_search(driver, settle: float = 2.0) -> None:  # list needs no search cli
     time.sleep(settle)
 
 
+def total_count(driver) -> int | None:
+    """Best-effort total issuer count from the 'Displaying X of N results' or
+    'N results' text on the list page."""
+    import re
+
+    try:
+        body = driver.find_element(By.TAG_NAME, "body").text
+    except Exception:
+        return None
+    m = re.search(r"of\s+([\d,]+)\s+result", body) or re.search(r"([\d,]+)\s+results?\b", body)
+    return int(m.group(1).replace(",", "")) if m else None
+
+
 def _column_index(driver) -> dict[str, int]:
     """Map our field names to <th> positions by header text."""
     ths = driver.find_elements(By.XPATH, "(//table)[1]//th")
