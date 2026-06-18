@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import undetected_chromedriver as uc
+from selenium.webdriver.remote.remote_connection import RemoteConnection
 
 
 def _detect_chrome_major(binary: str | None) -> int | None:
@@ -66,14 +67,25 @@ class BrowserConfig:
     # window.open() popup that otherwise hangs the driver until it times out and
     # kills the session. We rely on explicit waits/sleeps instead.
     page_load_strategy: str = "none"
-    # Selenium client read timeout (s) for a single WebDriver command.
-    command_timeout: int = 300
+    # Selenium client read timeout (s) for a single WebDriver command. Bounds a
+    # wedged Chrome so a hung command raises (and the worker can self-heal).
+    command_timeout: int = 120
     extra_args: list[str] = field(default_factory=list)
 
 
 def build_driver(cfg: BrowserConfig) -> uc.Chrome:
     """Construct a configured undetected-chromedriver Chrome instance."""
     cfg.download_dir.mkdir(parents=True, exist_ok=True)
+
+    # CRITICAL: bound the HTTP client read timeout to chromedriver *before* the
+    # driver is built. Without this, a wedged Chrome (which happens after a few
+    # big-zip downloads) makes a WebDriver command hang FOREVER, so the worker's
+    # retry/self-heal never gets its exception. set_timeout is a classmethod on
+    # RemoteConnection, so it applies to uc's ChromeRemoteConnection too.
+    try:
+        RemoteConnection.set_timeout(cfg.command_timeout)
+    except Exception:
+        pass
 
     options = uc.ChromeOptions()
     if cfg.page_load_strategy:
@@ -129,16 +141,6 @@ def build_driver(cfg: BrowserConfig) -> uc.Chrome:
         browser_executable_path=cfg.chrome_binary,
         version_main=version_main,
     )
-
-    # Give a single WebDriver command more room before the client read-timeout
-    # kills the session (downloads can make a command slow even with 'none').
-    try:
-        driver.command_executor.set_timeout(cfg.command_timeout)
-    except Exception:
-        try:
-            driver.command_executor._conn.connection_pool_kw["timeout"] = cfg.command_timeout
-        except Exception:
-            pass
 
     # Make sure CDP allows downloads to our directory (covers headed Chrome
     # which can otherwise ignore the prefs download path). Browser.* is
