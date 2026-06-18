@@ -50,6 +50,19 @@ class _DriverHolder:
             self._driver = scraper.make_driver(settings.download_dir)
         return self._driver
 
+    def diagnostics(self) -> str:
+        """Capture where the browser actually is, so a failure tells us whether
+        we hit the Radware block page (validate.perfdrive.com) or a changed UI."""
+        if self._driver is None:
+            return ""
+        try:
+            url = self._driver.current_url
+            title = self._driver.title
+            body = self._driver.find_element("tag name", "body").text[:500]
+            return f"\n[where] url={url}\n[where] title={title}\n[where] body<<{body}>>"
+        except Exception as e:  # browser may already be dead
+            return f"\n[where] diagnostics failed: {e}"
+
     def reset(self):
         if self._driver is not None:
             try:
@@ -130,6 +143,7 @@ def run_forever() -> None:
                 print(f"[worker] job {job_id} done")
             except Exception as exc:  # keep the worker alive across failures
                 err = "".join(traceback.format_exception_only(type(exc), exc)).strip()
+                err += holder.diagnostics()  # capture browser state before reset
                 print(f"[worker] job {job_id} FAILED: {err}")
                 traceback.print_exc()
                 holder.reset()  # browser may be in a bad state; rebuild next job
