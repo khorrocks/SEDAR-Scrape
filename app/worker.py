@@ -24,6 +24,7 @@ from .db import init_db, session_scope
 from .models import (
     KIND_DOWNLOAD,
     KIND_ENUMERATE,
+    KIND_PROBE,
     KIND_RECHECK,
     Company,
     Job,
@@ -72,6 +73,33 @@ class _DriverHolder:
             self._driver = None
 
 
+def _probe_urls(driver, urls: list[str]) -> str:
+    """Load each URL, let the SPA settle, and report where we landed plus any
+    nav-ish links. Used to discover the real SEDAR+ entry points."""
+    import time
+
+    report = []
+    for url in urls[:6]:
+        try:
+            driver.get(url)
+            time.sleep(10)
+            cur = driver.current_url
+            title = driver.title
+            links = driver.execute_script(
+                """return [...document.querySelectorAll('a,button')]
+                     .map(a=>[(a.textContent||'').trim().slice(0,40), a.getAttribute('href')||''])
+                     .filter(x=>x[0] && /profil|document|search|issuer|record/i.test(x[0]+x[1]))
+                     .slice(0,25);"""
+            )
+            body = driver.find_element("tag name", "body").text[:200].replace("\n", " ")
+            report.append(
+                f"GET {url}\n  -> {cur}\n  title={title}\n  body={body}\n  links={links}"
+            )
+        except Exception as e:
+            report.append(f"GET {url} -> ERROR {e}")
+    return "\n\n".join(report)
+
+
 def _run_job(job_id: int, holder: _DriverHolder) -> None:
     with session_scope() as db:
         job = db.get(Job, job_id)
@@ -84,6 +112,12 @@ def _run_job(job_id: int, holder: _DriverHolder) -> None:
             job.total_documents = total
             job.message = msg
             db.commit()
+
+        if job.kind == KIND_PROBE:
+            params = json.loads(job.params or "{}")
+            job.message = _probe_urls(holder.get(), params.get("urls", []))
+            db.commit()
+            return
 
         if job.kind == KIND_ENUMERATE:
             params = json.loads(job.params or "{}")
