@@ -53,7 +53,8 @@ class JobOut(BaseModel):
 
 
 class EnumerateRequest(BaseModel):
-    profile_type: str = "Company"
+    # None enumerates every issuer type; a string filters on the row Type.
+    profile_type: str | None = "Company"
     max_pages: int | None = None
 
 
