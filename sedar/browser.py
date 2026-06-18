@@ -13,12 +13,35 @@ SEDAR+ navigation live in the other modules.
 from __future__ import annotations
 
 import os
+import re
 import shutil
+import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import undetected_chromedriver as uc
+
+
+def _detect_chrome_major(binary: str | None) -> int | None:
+    """Return the installed Chrome major version (e.g. 149) by asking the
+    binary, so undetected-chromedriver downloads a *matching* driver instead of
+    defaulting to the latest (which mismatches an apt-pinned Chrome)."""
+    candidates = [binary] if binary else []
+    candidates += ["google-chrome", "google-chrome-stable", "chromium", "chrome"]
+    for cand in candidates:
+        if not cand:
+            continue
+        try:
+            out = subprocess.run(
+                [cand, "--version"], capture_output=True, text=True, timeout=15
+            ).stdout
+        except Exception:
+            continue
+        m = re.search(r"\b(\d+)\.\d+\.\d+", out)
+        if m:
+            return int(m.group(1))
+    return None
 
 
 @dataclass
@@ -82,13 +105,20 @@ def build_driver(cfg: BrowserConfig) -> uc.Chrome:
         os.chmod(tmp, 0o755)
         driver_path = str(tmp)
 
+    # Pin uc to the installed Chrome major version so it fetches a matching
+    # chromedriver. Without this, uc can grab the latest driver (e.g. 150) for an
+    # older apt-installed Chrome (e.g. 149) and fail with SessionNotCreated.
+    version_main = cfg.version_main
+    if version_main is None:
+        version_main = _detect_chrome_major(cfg.chrome_binary)
+
     driver = uc.Chrome(
         options=options,
         headless=cfg.headless,
         use_subprocess=True,
         driver_executable_path=driver_path,
         browser_executable_path=cfg.chrome_binary,
-        version_main=cfg.version_main,
+        version_main=version_main,
     )
 
     # Make sure CDP allows downloads to our directory (covers headed Chrome
