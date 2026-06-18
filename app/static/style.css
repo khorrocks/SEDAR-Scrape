@@ -34,6 +34,13 @@ main { max-width: 1100px; margin: 0 auto; padding: 24px 28px; }
 .stats b { color: var(--text); }
 .hint { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
 
+.add-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+.add-row .add-label { color: var(--muted); font-size: 13px; }
+.add-row input { padding: 8px 10px; border-radius: 7px; border: 1px solid var(--border);
+  background: var(--panel-2); color: var(--text); font-size: 13px; }
+.add-row #add-number { width: 140px; }
+.add-row #add-name { flex: 1; min-width: 140px; }
+
 .search-wrap { position: relative; }
 #search {
   width: 100%; padding: 13px 14px; border-radius: 9px; border: 1px solid var(--border);

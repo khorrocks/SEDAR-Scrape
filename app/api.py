@@ -23,6 +23,7 @@ from .models import (
 )
 from . import queue as q
 from .schemas import (
+    AddCompanyRequest,
     CompanyOut,
     DocumentOut,
     EnumerateRequest,
@@ -81,6 +82,27 @@ def enumerate_catalog(req: EnumerateRequest, db: Session = Depends(get_db)):
 # --------------------------------------------------------------------------- #
 # Saved companies + downloads
 # --------------------------------------------------------------------------- #
+@router.post("/companies/add", response_model=JobOut | CompanyOut)
+def add_company(req: AddCompanyRequest, db: Session = Depends(get_db)):
+    """Add a company by SEDAR issuer number (no enumeration needed) and queue a
+    download. Upserts on number so re-adding is safe."""
+    number = (req.number or "").strip()
+    if not number:
+        raise HTTPException(400, "a SEDAR issuer number is required")
+    company = db.scalar(select(Company).where(Company.number == number))
+    if company is None:
+        company = Company(number=number, name=(req.name or number).strip(), type="(added)")
+        db.add(company)
+    elif req.name:
+        company.name = req.name.strip()
+    company.saved = True
+    db.commit()
+    db.refresh(company)
+    if req.download:
+        return _job_out(q.enqueue_download(db, company))
+    return CompanyOut.model_validate(company)
+
+
 @router.get("/saved", response_model=list[CompanyOut])
 def list_saved(db: Session = Depends(get_db)):
     stmt = select(Company).where(Company.saved.is_(True)).order_by(Company.name.asc())
