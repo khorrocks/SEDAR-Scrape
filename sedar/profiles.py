@@ -1,34 +1,43 @@
-"""Enumerate reporting issuers / companies from the SEDAR+ Profiles search.
+"""Enumerate Canadian reporting issuers from SEDAR+.
 
-The Profiles tab lets you filter by profile type (Company, Investment fund,
-Investment fund group, Industry participant, Third party filer) and paginate
-through results. Each result row exposes: Name, Principal jurisdiction, Type,
-Number, Actions.
+Verified navigation (June 2026, via live probes from the deployed worker):
 
-Two things to know:
-  * The result rows do NOT contain the opaque ``profile.html?id=<hash>`` URL as
-    a plain href -- that link is produced by the per-row "Generate URL" action.
-  * The CSV "Export" on this page is capped at ~2,030 rows, but the paginated
-    HTML is not, so we page through the HTML instead.
+  * The bare homepage and ``records/search.html`` are NOT usable: the homepage
+    triggers the Radware captcha and ``search.html`` 404s.
+  * A ``profile.html?id=<hash>`` deep link DOES clear Radware and 302s into a
+    session ``viewInstance/view.html`` ("View Issuer Profile"). We use a known
+    profile as a session bootstrap.
+  * From that profile, the nav link **"View reporting issuers list"** opens the
+    consolidated **Reporting issuers list** -- already populated (no "Search"
+    button), paginated, with columns:
+        Name | Number | Reporting jurisdictions | Principal jurisdiction |
+        Type | In default | Active cease trade order
+    A "Filter by name or profile number" box and an "Export" (CSV, capped) also
+    exist; we page the HTML instead.
 
-The "Number" captured here (e.g. ``000003771``) is the stable issuer number and
-is what you feed into the Documents tab's "Profile name or number" lookup, so
-you usually do not need the opaque profile id at all.
+Columns are matched by header text (not fixed index) so a leading checkbox
+column can't throw the mapping off.
 """
 
 from __future__ import annotations
 
-import re
+import os
 import time
 
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
 
-# A reachable Profiles search entry point. Any SEDAR+ profile page redirects
-# into a session and exposes the "Profiles" nav tab.
-SEARCH_ENTRY = "https://www.sedarplus.ca/csa-party/records/search.html"
+# A known, stable profile used purely to bootstrap a Radware-cleared session.
+# Override with SEDAR_BOOTSTRAP_PROFILE_ID if this profile ever goes away.
+BOOTSTRAP_PROFILE_ID = os.getenv(
+    "SEDAR_BOOTSTRAP_PROFILE_ID", "517042d52d6b1ddfa40ea23cc4c62739"
+)
+BOOTSTRAP_URL = (
+    "https://www.sedarplus.ca/csa-party/records/profile.html?id={pid}"
+)
+REPORTING_ISSUERS_LINK = "View reporting issuers list"
 
+# Kept for the API/CLI "profile type" choices. The reporting issuers list mixes
+# all types; we expose Type per row and can filter on it.
 PROFILE_TYPES = (
     "Company",
     "Investment fund",
@@ -38,96 +47,132 @@ PROFILE_TYPES = (
 )
 
 
-def open_profiles_search(driver, settle: float = 8.0) -> None:
-    driver.get(SEARCH_ENTRY)
-    time.sleep(settle)
-    # Make sure we are on the Profiles tab.
-    tabs = driver.find_elements(By.XPATH, "//a[normalize-space(.)='Profiles']")
-    if tabs:
-        driver.execute_script("arguments[0].click();", tabs[0])
-        time.sleep(settle)
-
-
-def set_profile_type(driver, profile_type: str) -> None:
-    """Select a value in the 'Profile type' dropdown (best-effort)."""
-    from selenium.webdriver.support.ui import Select
-
-    selects = driver.find_elements(By.XPATH, "//select[contains(@name,'ProfileType')]")
-    if not selects:
-        return
-    Select(selects[0]).select_by_visible_text(profile_type)
-
-
-def run_search(driver, settle: float = 9.0) -> None:
-    btn = WebDriverWait(driver, 30).until(
-        EC.element_to_be_clickable((By.XPATH, "//button[normalize-space(.)='Search']"))
+def _click_by_text(driver, text: str) -> bool:
+    return bool(
+        driver.execute_script(
+            """const t=arguments[0].toLowerCase();
+               const el=[...document.querySelectorAll('a,button')]
+                 .find(e=>(e.textContent||'').trim().toLowerCase().includes(t));
+               if(el){el.scrollIntoView({block:'center'});el.click();return true;}
+               return false;""",
+            text,
+        )
     )
-    driver.execute_script("arguments[0].click();", btn)
+
+
+def open_reporting_issuers(driver, settle: float = 10.0) -> None:
+    """Bootstrap a session via a known profile, then open the issuers list."""
+    driver.get(BOOTSTRAP_URL.format(pid=BOOTSTRAP_PROFILE_ID))
+    time.sleep(settle)
+    if not _click_by_text(driver, REPORTING_ISSUERS_LINK):
+        raise RuntimeError("could not find 'View reporting issuers list' nav link")
     time.sleep(settle)
 
 
-def total_results(driver) -> int | None:
-    body = driver.find_element(By.TAG_NAME, "body").text
-    m = re.search(r"Displaying[\s\d,\-]+of\s+([\d,]+)\s+results", body)
-    return int(m.group(1).replace(",", "")) if m else None
+# Backwards-compatible alias (lookup.py / older callers).
+def open_profiles_search(driver, settle: float = 10.0) -> None:
+    open_reporting_issuers(driver, settle=settle)
 
 
-def scrape_page(driver) -> list[dict]:
-    """Scrape the current Profiles results page into row dicts."""
-    rows = driver.find_elements(By.XPATH, "//table//tr")
+def set_profile_type(driver, profile_type: str) -> None:  # no-op: list isn't typed
+    return None
+
+
+def run_search(driver, settle: float = 2.0) -> None:  # list needs no search click
+    time.sleep(settle)
+
+
+def _column_index(driver) -> dict[str, int]:
+    """Map our field names to <th> positions by header text."""
+    ths = driver.find_elements(By.XPATH, "(//table)[1]//th")
+    idx: dict[str, int] = {}
+    for i, th in enumerate(ths):
+        t = (th.text or "").strip().lower()
+        if not t:
+            continue
+        if "name" in t and "name" not in idx:
+            idx["name"] = i
+        elif t.startswith("number"):
+            idx["number"] = i
+        elif "principal jurisdiction" in t:
+            idx["jurisdiction"] = i
+        elif t.startswith("type"):
+            idx["type"] = i
+    return idx
+
+
+def scrape_page(driver, col: dict[str, int] | None = None) -> list[dict]:
+    col = col or _column_index(driver)
+    if "name" not in col or "number" not in col:
+        return []
     out = []
+    rows = driver.find_elements(By.XPATH, "(//table)[1]//tbody//tr")
     for r in rows:
         cells = r.find_elements(By.TAG_NAME, "td")
-        if len(cells) >= 4:
-            out.append(
-                {
-                    "name": cells[0].text.strip(),
-                    "jurisdiction": cells[1].text.strip(),
-                    "type": cells[2].text.strip(),
-                    "number": cells[3].text.strip(),
-                }
-            )
+        need = max(col["name"], col["number"])
+        if len(cells) <= need:
+            continue
+        name = cells[col["name"]].text.strip()
+        number = cells[col["number"]].text.strip()
+        if not name or not number:
+            continue
+        out.append(
+            {
+                "name": name,
+                "number": number,
+                "jurisdiction": cells[col["jurisdiction"]].text.strip()
+                if "jurisdiction" in col and len(cells) > col["jurisdiction"] else "",
+                "type": cells[col["type"]].text.strip()
+                if "type" in col and len(cells) > col["type"] else "",
+            }
+        )
     return out
 
 
 def next_page(driver, settle: float = 8.0) -> bool:
-    """Click 'Next »' if present and enabled. Returns False when no next page."""
-    links = driver.find_elements(
-        By.XPATH, "//a[contains(normalize-space(.), 'Next')]"
+    """Click a 'Next' pagination control if present and enabled."""
+    clicked = driver.execute_script(
+        """const els=[...document.querySelectorAll('a,button')];
+           const el=els.find(e=>{
+             const t=(e.textContent||'').trim().toLowerCase();
+             const ok=t==='next'||t.includes('next')||t.includes('»');
+             return ok && !e.disabled && e.offsetParent!==null
+                    && !(e.getAttribute('aria-disabled')==='true');
+           });
+           if(el){el.scrollIntoView({block:'center'});el.click();return true;}
+           return false;""",
     )
-    for link in links:
-        if link.is_displayed() and link.is_enabled():
-            driver.execute_script("arguments[0].click();", link)
-            time.sleep(settle)
-            return True
-    return False
+    if clicked:
+        time.sleep(settle)
+    return bool(clicked)
 
 
 def enumerate_profiles(
     driver,
-    profile_type: str = "Company",
+    profile_type: str | None = "Company",
     max_pages: int | None = None,
     page_pause: float = 1.0,
 ) -> list[dict]:
-    """Page through the Profiles search and collect rows for a profile type.
+    """Page through the Reporting issuers list and collect rows.
 
-    ``max_pages`` caps how many result pages to walk (None = all). A polite
-    ``page_pause`` is added on top of the per-page settle time.
+    ``profile_type`` filters on the row Type when set (case-insensitive
+    substring); pass None to keep every type.
     """
-    open_profiles_search(driver)
-    set_profile_type(driver, profile_type)
-    run_search(driver)
+    open_reporting_issuers(driver)
+    col = _column_index(driver)
 
     collected: list[dict] = []
-    seen: set[tuple] = set()
+    seen: set[str] = set()
     page = 0
     while True:
         page += 1
-        for row in scrape_page(driver):
-            key = (row["name"], row["number"])
-            if key not in seen:
-                seen.add(key)
-                collected.append(row)
+        for row in scrape_page(driver, col):
+            if profile_type and profile_type.lower() not in (row["type"] or "").lower():
+                continue
+            if row["number"] in seen:
+                continue
+            seen.add(row["number"])
+            collected.append(row)
         if max_pages and page >= max_pages:
             break
         time.sleep(page_pause)
