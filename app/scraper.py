@@ -175,29 +175,49 @@ def download_company(
     return {"batches": batches, "new_documents": new_docs, "total_reported": total}
 
 
-def enumerate_catalog(db: Session, driver, profile_type: str = "Company",
-                      max_pages: int | None = None) -> int:
-    """Populate/refresh the companies catalog used by autocomplete."""
-    rows = profiles.enumerate_profiles(driver, profile_type=profile_type, max_pages=max_pages)
-    upserts = 0
-    for r in rows:
-        number = (r.get("number") or "").strip()
-        if not number:
-            continue
-        existing = db.scalar(select(Company).where(Company.number == number))
-        if existing:
-            existing.name = r.get("name") or existing.name
-            existing.jurisdiction = r.get("jurisdiction") or existing.jurisdiction
-            existing.type = r.get("type") or existing.type
-        else:
-            db.add(
-                Company(
-                    number=number,
-                    name=r.get("name", ""),
-                    jurisdiction=r.get("jurisdiction"),
-                    type=r.get("type"),
+def enumerate_catalog(db: Session, driver, profile_type: str | None = "Company",
+                      max_pages: int | None = None, progress: ProgressFn | None = None) -> int:
+    """Populate/refresh the companies catalog used by autocomplete.
+
+    Pages through the Reporting issuers list and upserts each page immediately
+    (checkpointing), so a long run survives an interruption. Returns the number
+    of catalog rows touched. Resuming re-walks from the top, but upserts are
+    idempotent (keyed on issuer number), so re-runs accumulate the full list.
+    """
+    profiles.open_reporting_issuers(driver)
+    col = profiles._column_index(driver)
+    total = profiles.total_count(driver)
+
+    seen: set[str] = set()
+    page = 0
+    while True:
+        page += 1
+        for r in profiles.scrape_page(driver, col):
+            if profile_type and profile_type.lower() not in (r.get("type") or "").lower():
+                continue
+            number = (r.get("number") or "").strip()
+            if not number or number in seen:
+                continue
+            seen.add(number)
+            existing = db.scalar(select(Company).where(Company.number == number))
+            if existing:
+                existing.name = r.get("name") or existing.name
+                existing.jurisdiction = r.get("jurisdiction") or existing.jurisdiction
+                existing.type = r.get("type") or existing.type
+            else:
+                db.add(
+                    Company(
+                        number=number,
+                        name=r.get("name", ""),
+                        jurisdiction=r.get("jurisdiction"),
+                        type=r.get("type"),
+                    )
                 )
-            )
-        upserts += 1
-    db.commit()
-    return upserts
+        db.commit()  # checkpoint after every page
+        if progress:
+            progress(page, len(seen), total or 0, f"page {page}: {len(seen)} issuers")
+        if max_pages and page >= max_pages:
+            break
+        if not profiles.next_page(driver, settle=4.0):  # light list: short settle
+            break
+    return len(seen)
