@@ -234,18 +234,28 @@ def _run_job(job_id: int, holder: _DriverHolder) -> None:
                 break
             except Exception as exc:
                 progressed = _doc_count(db, company.id) > saved_before
-                stalls = 0 if progressed else stalls + 1
                 err = "".join(traceback.format_exception_only(type(exc), exc)).strip()
-                # Give up if we've made no progress several attempts in a row
-                # (a genuine failure, not just browser degradation).
-                if attempts >= 12 or stalls >= 3:
+                blocked = "perfdrive" in err.lower() or "radware" in err.lower()
+                # A Radware block is IP-based and usually temporary -- back off
+                # for a while (don't count it as a hard no-progress stall). Plain
+                # no-progress failures stop after a few tries.
+                if progressed:
+                    stalls = 0
+                elif not blocked:
+                    stalls += 1
+                if attempts >= settings.max_download_attempts or stalls >= 3:
                     raise
-                print(f"[worker] job {job.id} batch failure (attempt {attempts}, "
-                      f"progressed={progressed}); rebuilding browser and resuming: {err}")
-                job.message = f"recovering after a batch failure (attempt {attempts})…"
+                wait = settings.radware_backoff_seconds if blocked else 5
+                kind_msg = (
+                    f"Radware throttling the IP — backing off {wait}s"
+                    if blocked else "recovering after a batch failure"
+                )
+                print(f"[worker] job {job.id} {kind_msg} (attempt {attempts}, "
+                      f"progressed={progressed}): {err}")
+                job.message = f"{kind_msg} (attempt {attempts})…"
                 db.commit()
                 holder.reset()  # fresh Chrome frees memory and clears popup state
-                time.sleep(5)
+                time.sleep(wait)
         job.message = (
             f"{result['new_documents']} new doc(s) in {result['batches']} batch(es) "
             f"this pass; {result['total_reported']} reported on site"

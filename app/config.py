@@ -39,8 +39,14 @@ class Settings:
 
     # --- Worker / queue ---
     worker_poll_seconds: float = float(os.getenv("WORKER_POLL_SECONDS", "5"))
-    # Polite pause between document batches (per-page zip downloads).
-    batch_pause_seconds: float = float(os.getenv("BATCH_PAUSE_SECONDS", "3"))
+    # Polite pause between document batches (per-page zip downloads). Slower
+    # pacing reduces how quickly we trip Radware's rate limiting.
+    batch_pause_seconds: float = float(os.getenv("BATCH_PAUSE_SECONDS", "8"))
+    # On a Radware block, how long the worker waits before retrying (the block
+    # is IP-based and usually clears after the IP cools down).
+    radware_backoff_seconds: float = float(os.getenv("RADWARE_BACKOFF_SECONDS", "180"))
+    # Max self-heal attempts for one company download before giving up.
+    max_download_attempts: int = int(os.getenv("MAX_DOWNLOAD_ATTEMPTS", "15"))
     # Per-batch (per 30-doc zip) download timeout.
     download_timeout_seconds: float = float(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "180"))
 
