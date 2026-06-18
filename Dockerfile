@@ -34,6 +34,8 @@ RUN chmod +x start.sh && mkdir -p /data
 ENV CHROME_BINARY=/usr/bin/google-chrome \
     PORT=8000
 EXPOSE 8000
-VOLUME ["/data"]
+# Note: no `VOLUME` instruction -- Railway rejects it and provides its own
+# Railway Volumes (mount one at /data). For plain Docker/compose, mount a
+# bind/volume at /data yourself (see docker-compose usage in the README).
 
 CMD ["./start.sh"]
