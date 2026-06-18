@@ -115,30 +115,40 @@ def _column_index(driver) -> dict[str, int]:
 
 
 def scrape_page(driver, col: dict[str, int] | None = None) -> list[dict]:
+    """Scrape the current issuers page. Retries locally on a
+    StaleElementReferenceException (the table re-renders as you paginate) so a
+    transient stale ref doesn't escalate to a full browser rebuild + re-walk."""
+    from selenium.common.exceptions import StaleElementReferenceException
+
     col = col or _column_index(driver)
     if "name" not in col or "number" not in col:
         return []
-    out = []
-    rows = driver.find_elements(By.XPATH, "(//table)[1]//tbody//tr")
-    for r in rows:
-        cells = r.find_elements(By.TAG_NAME, "td")
-        need = max(col["name"], col["number"])
-        if len(cells) <= need:
-            continue
-        name = cells[col["name"]].text.strip()
-        number = cells[col["number"]].text.strip()
-        if not name or not number:
-            continue
-        out.append(
-            {
-                "name": name,
-                "number": number,
-                "jurisdiction": cells[col["jurisdiction"]].text.strip()
-                if "jurisdiction" in col and len(cells) > col["jurisdiction"] else "",
-                "type": cells[col["type"]].text.strip()
-                if "type" in col and len(cells) > col["type"] else "",
-            }
-        )
+    for _ in range(4):
+        out = []
+        try:
+            rows = driver.find_elements(By.XPATH, "(//table)[1]//tbody//tr")
+            for r in rows:
+                cells = r.find_elements(By.TAG_NAME, "td")
+                need = max(col["name"], col["number"])
+                if len(cells) <= need:
+                    continue
+                name = cells[col["name"]].text.strip()
+                number = cells[col["number"]].text.strip()
+                if not name or not number:
+                    continue
+                out.append(
+                    {
+                        "name": name,
+                        "number": number,
+                        "jurisdiction": cells[col["jurisdiction"]].text.strip()
+                        if "jurisdiction" in col and len(cells) > col["jurisdiction"] else "",
+                        "type": cells[col["type"]].text.strip()
+                        if "type" in col and len(cells) > col["type"] else "",
+                    }
+                )
+            return out
+        except StaleElementReferenceException:
+            time.sleep(1)
     return out
 
 
