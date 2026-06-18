@@ -200,6 +200,22 @@ def download_file(path: str = Query(...)):
     return FileResponse(target, filename=target.name, media_type="application/zip")
 
 
+@router.post("/debug/probe", response_model=JobOut)
+def debug_probe(payload: dict, db: Session = Depends(get_db)):
+    """Queue a debug probe that loads the given URLs in the live browser and
+    reports titles/links. Body: {"urls": ["https://..."]}."""
+    import json as _json
+
+    from .models import KIND_PROBE
+
+    job = Job(kind=KIND_PROBE, status=JOB_QUEUED,
+              params=_json.dumps({"urls": payload.get("urls", [])}))
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return _job_out(job)
+
+
 @router.post("/cron/recheck-all")
 def recheck_all(db: Session = Depends(get_db)):
     """Queue a recheck for every saved company. Wire a Railway Cron service to
