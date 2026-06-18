@@ -208,8 +208,7 @@ def debug_probe(payload: dict, db: Session = Depends(get_db)):
 
     from .models import KIND_PROBE
 
-    job = Job(kind=KIND_PROBE, status=JOB_QUEUED,
-              params=_json.dumps({"urls": payload.get("urls", [])}))
+    job = Job(kind=KIND_PROBE, status=JOB_QUEUED, params=_json.dumps(payload))
     db.add(job)
     db.commit()
     db.refresh(job)
