@@ -21,14 +21,23 @@ import traceback
 
 from .config import settings
 from .db import init_db, session_scope
+from sqlalchemy import func, select
+
 from .models import (
     KIND_DOWNLOAD,
     KIND_ENUMERATE,
     KIND_PROBE,
     KIND_RECHECK,
     Company,
+    Document,
     Job,
 )
+
+
+def _doc_count(db, company_id: int) -> int:
+    return db.scalar(
+        select(func.count(Document.id)).where(Document.company_id == company_id)
+    ) or 0
 from . import queue as q
 from . import scraper
 
@@ -209,12 +218,37 @@ def _run_job(job_id: int, holder: _DriverHolder) -> None:
             raise RuntimeError(f"job {job.id} references missing company {job.company_id}")
 
         only_new = job.kind == KIND_RECHECK
-        result = scraper.download_company(
-            db, holder.get(), company, only_new=only_new, progress=progress
-        )
+        # The browser degrades after several big-zip downloads (popup churn /
+        # memory). Retry with a FRESH browser on failure; download_company
+        # resumes by skipping documents already saved, so each attempt makes
+        # forward progress until the company is complete.
+        attempts = 0
+        stalls = 0
+        while True:
+            attempts += 1
+            saved_before = _doc_count(db, company.id)
+            try:
+                result = scraper.download_company(
+                    db, holder.get(), company, only_new=only_new, progress=progress
+                )
+                break
+            except Exception as exc:
+                progressed = _doc_count(db, company.id) > saved_before
+                stalls = 0 if progressed else stalls + 1
+                err = "".join(traceback.format_exception_only(type(exc), exc)).strip()
+                # Give up if we've made no progress several attempts in a row
+                # (a genuine failure, not just browser degradation).
+                if attempts >= 12 or stalls >= 3:
+                    raise
+                print(f"[worker] job {job.id} batch failure (attempt {attempts}, "
+                      f"progressed={progressed}); rebuilding browser and resuming: {err}")
+                job.message = f"recovering after a batch failure (attempt {attempts})…"
+                db.commit()
+                holder.reset()  # fresh Chrome frees memory and clears popup state
+                time.sleep(5)
         job.message = (
-            f"{result['new_documents']} new doc(s) in {result['batches']} batch(es); "
-            f"{result['total_reported']} reported on site"
+            f"{result['new_documents']} new doc(s) in {result['batches']} batch(es) "
+            f"this pass; {result['total_reported']} reported on site"
         )
         db.commit()
 
