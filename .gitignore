@@ -6,6 +6,9 @@ venv/
 downloads/
 *.csv
 !sample_*.csv
+# app data: SQLite db + downloaded zips (use a mounted volume in prod)
+data/
+*.db
 # chromedriver / browser caches
 *.crdownload
 uc_*chromedriver*

@@ -1,0 +1,13 @@
+.git
+.gitignore
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+data/
+downloads/
+*.csv
+!sample_*.csv
+*.crdownload
+uc_*chromedriver*
+reference/
