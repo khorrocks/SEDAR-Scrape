@@ -61,6 +61,13 @@ class BrowserConfig:
     # intercept TLS (e.g. some CI sandboxes); leave False on a normal machine.
     ignore_cert_errors: bool = False
     window_size: tuple[int, int] = (1920, 1400)
+    # Page-load strategy. 'none' stops WebDriver commands from blocking on a
+    # load event -- essential here, because the document download fires via a
+    # window.open() popup that otherwise hangs the driver until it times out and
+    # kills the session. We rely on explicit waits/sleeps instead.
+    page_load_strategy: str = "none"
+    # Selenium client read timeout (s) for a single WebDriver command.
+    command_timeout: int = 300
     extra_args: list[str] = field(default_factory=list)
 
 
@@ -69,6 +76,8 @@ def build_driver(cfg: BrowserConfig) -> uc.Chrome:
     cfg.download_dir.mkdir(parents=True, exist_ok=True)
 
     options = uc.ChromeOptions()
+    if cfg.page_load_strategy:
+        options.page_load_strategy = cfg.page_load_strategy
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument(f"--window-size={cfg.window_size[0]},{cfg.window_size[1]}")
@@ -120,6 +129,16 @@ def build_driver(cfg: BrowserConfig) -> uc.Chrome:
         browser_executable_path=cfg.chrome_binary,
         version_main=version_main,
     )
+
+    # Give a single WebDriver command more room before the client read-timeout
+    # kills the session (downloads can make a command slow even with 'none').
+    try:
+        driver.command_executor.set_timeout(cfg.command_timeout)
+    except Exception:
+        try:
+            driver.command_executor._conn.connection_pool_kw["timeout"] = cfg.command_timeout
+        except Exception:
+            pass
 
     # Make sure CDP allows downloads to our directory (covers headed Chrome
     # which can otherwise ignore the prefs download path). Browser.* is
