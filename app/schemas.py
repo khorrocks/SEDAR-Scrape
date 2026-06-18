@@ -61,3 +61,11 @@ class EnumerateRequest(BaseModel):
 class SaveRequest(BaseModel):
     # If true, queue a full download immediately after saving.
     download: bool = True
+
+
+class AddCompanyRequest(BaseModel):
+    # SEDAR issuer number (e.g. "000003771"). The download drives off this via
+    # the "Profile name or number" lookup, so a company need not be enumerated.
+    number: str
+    name: str | None = None
+    download: bool = True

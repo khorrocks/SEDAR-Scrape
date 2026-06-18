@@ -47,7 +47,13 @@ async function runSearch(q) {
     lastResults = await api(`/companies/search?q=${encodeURIComponent(q)}&limit=12`);
   } catch { return; }
   if (!lastResults.length) {
-    suggestions.innerHTML = `<li class="empty">No matches in the local catalog.</li>`;
+    const digits = q.replace(/\D/g, "");
+    const addItem = digits
+      ? `<li id="sugg-add" data-num="${esc(digits)}">➕ Add &amp; download SEDAR #${esc(digits)}</li>`
+      : `<li class="empty">No local match. Add it by SEDAR number below.</li>`;
+    suggestions.innerHTML = addItem;
+    const add = document.getElementById("sugg-add");
+    if (add) add.addEventListener("click", () => addByNumber(add.dataset.num));
     suggestions.hidden = false;
     return;
   }
@@ -76,6 +82,27 @@ async function selectCompany(c) {
   } catch (e) { alert("Could not queue download: " + e.message); }
   refreshAll();
 }
+
+async function addByNumber(number, name) {
+  if (!number) return;
+  try {
+    await api(`/companies/add`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ number, name: name || null, download: true }),
+    });
+  } catch (e) { alert("Could not add company: " + e.message); return; }
+  hideSuggestions();
+  search.value = "";
+  refreshAll();
+}
+
+el("add-btn").addEventListener("click", () => {
+  const num = el("add-number").value.trim();
+  if (!num) { el("add-number").focus(); return; }
+  addByNumber(num, el("add-name").value.trim());
+  el("add-number").value = ""; el("add-name").value = "";
+});
 
 // --------------------------------------------------------------------------
 // Saved companies + queue + stats
