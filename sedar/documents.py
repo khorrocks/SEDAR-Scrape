@@ -65,22 +65,54 @@ def result_count(driver) -> str:
     return m.group(0) if m else ""
 
 
+def _results_table(driver):
+    """Return the documents results table (the one with Document + Submitted
+    headers), not the date-picker calendar table that shares the page."""
+    for t in driver.find_elements(By.XPATH, "//table"):
+        heads = [th.text.strip().lower() for th in t.find_elements(By.XPATH, ".//th")]
+        if any("document" in h for h in heads) and any("submitted" in h for h in heads):
+            idx = {}
+            for i, h in enumerate(heads):
+                if h.startswith("profile"):
+                    idx["profile"] = i
+                elif h.startswith("document"):
+                    idx["document"] = i
+                elif "submitted" in h:
+                    idx["submitted"] = i
+                elif "principal jurisdiction" in h:
+                    idx["jurisdiction"] = i
+                elif "file size" in h:
+                    idx["file_size"] = i
+            return t, idx
+    return None, {}
+
+
 def list_page_rows(driver) -> list[dict]:
-    """Scrape the visible results table into row dicts."""
-    rows = driver.find_elements(By.XPATH, "//table//tr")
+    """Scrape the documents results table into row dicts, mapping columns by
+    header so a leading checkbox / trailing Actions column can't misalign."""
+    table, idx = _results_table(driver)
+    if not table or "document" not in idx:
+        return []
     out = []
-    for r in rows:
+    for r in table.find_elements(By.XPATH, ".//tbody//tr"):
         cells = r.find_elements(By.TAG_NAME, "td")
-        if len(cells) >= 5:
-            out.append(
-                {
-                    "profile": cells[0].text.strip(),
-                    "document": cells[1].text.strip(),
-                    "submitted": cells[2].text.strip(),
-                    "jurisdiction": cells[3].text.strip(),
-                    "file_size": cells[4].text.strip(),
-                }
-            )
+
+        def cell(key: str) -> str:
+            i = idx.get(key)
+            return cells[i].text.strip() if i is not None and i < len(cells) else ""
+
+        doc = cell("document")
+        if not doc:
+            continue
+        out.append(
+            {
+                "profile": cell("profile"),
+                "document": doc,
+                "submitted": cell("submitted"),
+                "jurisdiction": cell("jurisdiction"),
+                "file_size": cell("file_size"),
+            }
+        )
     return out
 
 

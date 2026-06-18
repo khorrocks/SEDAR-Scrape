@@ -70,20 +70,8 @@ def resolve_profile(driver, company: Company) -> bool:
         docs.run_search(driver)
         return True
 
-    # First time: try to capture and store the stable profile id.
-    captured = None
-    try:
-        captured = lookup.capture_profile_id_for_number(driver, company.number)
-    except Exception:
-        captured = None
-    if captured:
-        company.profile_id = captured
-        company.profile_url = docs.PROFILE_URL.format(profile_id=captured)
-        docs.open_profile_documents(driver, captured)
-        docs.run_search(driver)
-        return True
-
-    # Fallback: drive the Documents tab straight from the issuer Number.
+    # Enumerated companies only have a Number: drive the documents search from
+    # it (bootstrap session -> searchDocuments -> 'Profile name or number').
     if lookup.open_documents_by_number(driver, company.number):
         return True
     return False
