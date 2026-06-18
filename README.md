@@ -66,7 +66,99 @@ The Profiles search filters by **Profile type** — `Company`, `Investment fund`
   (e.g. `000003771`) is stable and can be fed straight into the Documents tab's
   *"Profile name or number"* lookup, so you usually don't need the opaque id.
 
-## Install
+## Web app (search · save · queue · scheduled re-check)
+
+On top of the scraper there is a small **FastAPI web app** (`app/`) with a vanilla-JS
+UI:
+
+- **Autocomplete** Canadian companies as you type (by name or number). It searches a
+  **local catalog** in our own DB — *not* SEDAR+ live — so it is instant and doesn't
+  hammer the site on every keystroke.
+- **Select a company** → it's saved, its SEDAR profile URL is resolved/stored, and a
+  full document download is queued.
+- A **serial download queue**: one company's download finishes completely (in
+  **batches of 30** — SEDAR+ paginates documents 30/page and downloads per page) before
+  the next company starts. The queue is visualised live in the UI.
+- **Saved companies** view with per-company **document lists** and links to the
+  downloaded batch zips.
+- **Scheduled re-check**: a cron re-checks every saved company for *new* documents
+  (newest-first, so it stops once it reaches already-downloaded filings).
+
+### Architecture
+
+```
+┌─────────────┐   enqueue jobs    ┌──────────┐   claim 1 at a time   ┌──────────────┐
+│ FastAPI web │ ────────────────▶ │ jobs tbl │ ◀──────────────────── │ worker       │
+│ + JS UI     │ ◀──── reads ───── │ (DB)     │                       │ owns 1 Chrome│
+└─────────────┘                   └──────────┘                       │ under Xvfb   │
+   never launches Chrome                                             └──────────────┘
+```
+
+The **web process never launches Chrome** — it only reads/writes the DB and enqueues
+jobs. A **single worker** owns the one real (non-headless) Chrome under Xvfb and drains
+the queue strictly one job at a time, which is exactly the "finish a company before
+starting the next" guarantee. Files land on a mounted volume; the catalog/queue/doc
+index live in SQLite (default) or Postgres (`DATABASE_URL`).
+
+### Will this run on Vercel / Cloudflare / Railway?
+
+The scraper needs a **persistent, real (non-headless) Chrome process under Xvfb** —
+that's the only thing that gets past SEDAR+'s Radware bot wall. That single requirement
+decides hosting:
+
+| Platform | Web/UI | Scraper engine | Verdict |
+|---|---|---|---|
+| **Cloudflare Workers + KV** | ✅ | ❌ can't run a Chrome process / Xvfb / native uc patches; CPU & wall-time limits; Browser Rendering is *headless* (Radware blocks it) | ❌ not for the engine |
+| **Vercel** | ✅ | ❌ serverless functions: no persistent browser, no Xvfb, ephemeral FS, timeouts, no long-lived worker | ❌ not for the engine |
+| **Railway / Render / Fly.io / VPS** | ✅ | ✅ long-lived container: install Chrome + Xvfb, run the worker, attach Postgres + a volume, use cron | ✅ **use this** |
+
+> **Bottom line:** host the engine on a real container platform (**Railway** recommended).
+> Cloudflare R2 / S3 are fine for *file storage*, but the queue worker itself must run
+> somewhere that can keep a browser alive. You *could* split the UI onto Vercel/Cloudflare
+> Pages talking to the worker's API — but the simplest deploy is one Railway service
+> running both.
+
+### Run it locally
+
+```bash
+pip install -r requirements.txt
+python -m app.manage initdb
+
+# Terminal 1 — the worker (needs Xvfb + Chrome for the real browser):
+xvfb-run -a -s "-screen 0 1920x1400x24" python -m app.worker
+
+# Terminal 2 — the web app:
+uvicorn app.main:app --reload --port 8000      # open http://localhost:8000
+
+# Populate the autocomplete catalog (queues a browser job the worker runs):
+python -m app.manage enumerate --type Company
+```
+
+### Deploy to Railway
+
+1. New project → **Deploy from repo**. The `Dockerfile` installs Chrome + Xvfb and
+   `railway.json` sets the start command to `./start.sh` (runs the worker under Xvfb
+   **and** the web server in one container).
+2. Add a **Volume** mounted at `/data` (downloaded zips + SQLite live here), or add the
+   **Postgres** plugin and set `DATABASE_URL`.
+3. (Optional) Add a **Cron** service that `POST`s `/api/cron/recheck-all` daily, or set
+   `ENABLE_INPROCESS_CRON=true` to schedule it in-process (`CRON_HOUR`, 24h).
+4. To scale, split into **two services from the same image** (see `Procfile`): a `web`
+   service and a `worker` service sharing the Postgres DB + volume.
+
+Key env vars: `DATA_DIR` (default `/data` in Docker), `DATABASE_URL`, `CHROME_BINARY`
+(set to `/usr/bin/google-chrome` in the image), `HEADLESS` (leave `false`),
+`BATCH_PAUSE_SECONDS`, `DOWNLOAD_TIMEOUT_SECONDS`, `WORKER_POLL_SECONDS`.
+
+> **Verification note:** the web app, DB, serial queue, and API are tested. The
+> browser bridge that turns a saved company's *Number* into a document download
+> (`sedar/lookup.py` — the "Generate URL" capture and the Documents-tab number lookup)
+> follows the documented SEDAR+ DOM but, per the handoff, has **not yet been verified
+> click-by-click against the live site**. The underlying `profile.html?id=` download
+> path *is* verified; expect to tune the text-based selectors in `lookup.py` on first
+> live run.
+
+## CLI (lower-level, no web app)
 
 ```bash
 pip install -r requirements.txt

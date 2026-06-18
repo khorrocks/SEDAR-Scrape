@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SEDAR-Scrape</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>SEDAR<span>-Scrape</span></h1>
+    <div id="stats" class="stats"></div>
+  </header>
+
+  <main>
+    <section class="panel search-panel">
+      <h2>Find a company</h2>
+      <div class="search-wrap">
+        <input id="search" type="text" autocomplete="off" spellcheck="false"
+               placeholder="Search Canadian companies by name or number…" />
+        <ul id="suggestions" class="suggestions" hidden></ul>
+      </div>
+      <p class="hint" id="catalog-hint"></p>
+    </section>
+
+    <div class="columns">
+      <section class="panel">
+        <h2>Saved companies</h2>
+        <div id="saved" class="cards"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Download queue</h2>
+        <p class="hint">One company finishes (in batches of 30) before the next starts.</p>
+        <div id="queue" class="queue"></div>
+      </section>
+    </div>
+  </main>
+
+  <!-- Company documents drawer -->
+  <div id="drawer" class="drawer" hidden>
+    <div class="drawer-inner">
+      <button class="close" id="drawer-close">×</button>
+      <h2 id="drawer-title"></h2>
+      <div id="drawer-meta" class="hint"></div>
+      <div class="drawer-actions">
+        <button id="btn-redownload">Download all</button>
+        <button id="btn-recheck">Check for new</button>
+      </div>
+      <div id="drawer-docs"></div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
