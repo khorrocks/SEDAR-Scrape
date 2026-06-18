@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+# scraper output
+downloads/
+*.csv
+!sample_*.csv
+# chromedriver / browser caches
+*.crdownload
+uc_*chromedriver*

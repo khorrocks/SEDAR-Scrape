@@ -1,0 +1,6 @@
+# Pin known-working versions. undetected-chromedriver ships only an sdist;
+# on very new setuptools its setup.py can fail to build a wheel -- if so, install
+# with:  pip install --no-build-isolation undetected-chromedriver
+undetected-chromedriver==3.5.5
+selenium>=4.15
+websockets>=12.0
