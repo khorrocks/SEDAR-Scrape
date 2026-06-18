@@ -110,6 +110,30 @@ def _probe_urls(driver, params) -> str:
         driver.get(f["bootstrap"])
         time.sleep(10)
         steps.append(f"bootstrap -> {driver.current_url} ({driver.title})")
+        for sub in f.get("click_href", []):
+            clicked = driver.execute_script(
+                """const s=arguments[0];
+                   const el=[...document.querySelectorAll('a')]
+                     .find(a=>(a.getAttribute('href')||'').includes(s));
+                   if(el){el.scrollIntoView({block:'center'});el.click();return true;}
+                   return false;""",
+                sub,
+            )
+            time.sleep(9)
+            steps.append(f"click_href '{sub}' -> {clicked} -> {driver.current_url}")
+        for name, value in (f.get("fill") or {}).items():
+            driver.execute_script(
+                """const n=arguments[0], v=arguments[1];
+                   const el=document.querySelector(`input[name="${n}"]`)
+                       || [...document.querySelectorAll('input')]
+                            .find(i=>(i.getAttribute('placeholder')||'').toLowerCase().includes(n.toLowerCase()));
+                   if(el){el.focus();el.value=v;
+                     el.dispatchEvent(new Event('input',{bubbles:true}));
+                     el.dispatchEvent(new Event('change',{bubbles:true}));}""",
+                name, value,
+            )
+            time.sleep(6)
+            steps.append(f"fill {name}={value}")
         for text in f.get("clicks", []):
             clicked = driver.execute_script(
                 """const t=arguments[0].toLowerCase();
