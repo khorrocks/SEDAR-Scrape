@@ -133,37 +133,69 @@ def _select_all_on_page(driver) -> bool:
     )
 
 
-def _wait_for_download(download_dir: Path, before: set[str], timeout: float) -> str | None:
-    """Block until a new, complete (non-.crdownload) file appears."""
+def is_blocked(driver) -> bool:
+    """True if the browser is on a Radware/ShieldSquare block or captcha page."""
+    try:
+        url = (driver.current_url or "").lower()
+        title = (driver.title or "").lower()
+    except Exception:
+        return False
+    return (
+        "perfdrive.com" in url
+        or "captcha" in title
+        or ("block" in title and "page" in title)
+    )
+
+
+def _log(msg: str) -> None:
+    print(f"[documents] {msg}", flush=True)
+
+
+def _wait_for_download(driver, download_dir: Path, before: set[str], timeout: float) -> str | None:
+    """Block until a new, complete (non-.crdownload) file appears. Bails early if
+    a Radware block page appears (a re-challenge would never produce a file)."""
     deadline = time.time() + timeout
+    saw_partial = False
     while time.time() < deadline:
         now = set(p.name for p in download_dir.iterdir())
-        new = [f for f in now - before if not f.endswith(".crdownload")]
+        added = now - before
+        new = [f for f in added if not f.endswith(".crdownload")]
         if new:
             return new[0]
+        saw_partial = saw_partial or any(f.endswith(".crdownload") for f in added)
+        # If nothing has even started after a grace period and we're blocked, stop.
+        if not saw_partial and is_blocked(driver):
+            raise RuntimeError("Radware re-challenge appeared during download")
         time.sleep(2)
     return None
 
 
 def download_current_page(
-    driver, download_dir: Path, timeout: float = 600.0
+    driver, download_dir: Path, timeout: float = 180.0
 ) -> str | None:
     """Select every document on the current results page and download the zip.
 
-    Returns the downloaded filename, or None on timeout. The download is a
-    two-step action: the blue "Download documents" button opens a confirmation
-    modal whose green "Download" button is the real trigger.
+    Two-step action: the blue "Download documents" button opens a modal whose
+    green "Download" button is the real trigger. Fails fast (rather than hanging)
+    if the page is a Radware block, the controls are missing, or no file lands.
     """
+    if is_blocked(driver):
+        raise RuntimeError("Radware block page detected before download")
     if not _select_all_on_page(driver):
         raise RuntimeError("could not find the 'All documents listed on this page' checkbox")
     time.sleep(2)
 
     before = set(p.name for p in download_dir.iterdir()) if download_dir.exists() else set()
 
-    trigger = driver.find_element(
+    triggers = driver.find_elements(
         By.XPATH, "//button[contains(normalize-space(.), 'Download documents')]"
     )
-    _click(driver, trigger)
+    if not triggers:
+        raise RuntimeError(
+            f"no 'Download documents' button (url={driver.current_url})"
+        )
+    _log("clicking 'Download documents'")
+    _click(driver, triggers[0])
     time.sleep(4)  # let the modal render
 
     # The modal's confirmation button is labelled exactly "Download". Use a
@@ -175,7 +207,17 @@ def download_current_page(
         if b.is_displayed() and b.text.strip() == "Download"
     ]
     if not confirm:
+        if is_blocked(driver):
+            raise RuntimeError("Radware re-challenge when opening download modal")
         raise RuntimeError("download confirmation modal did not appear")
+    _log("clicking modal 'Download', waiting for zip")
     ActionChains(driver).move_to_element(confirm[0]).pause(0.3).click(confirm[0]).perform()
 
-    return _wait_for_download(download_dir, before, timeout)
+    fname = _wait_for_download(driver, download_dir, before, timeout)
+    if fname is None:
+        raise RuntimeError(
+            f"download produced no file within {timeout:.0f}s "
+            f"(url={driver.current_url}, title={driver.title!r})"
+        )
+    _log(f"downloaded {fname}")
+    return fname

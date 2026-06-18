@@ -42,7 +42,7 @@ class Settings:
     # Polite pause between document batches (per-page zip downloads).
     batch_pause_seconds: float = float(os.getenv("BATCH_PAUSE_SECONDS", "3"))
     # Per-batch (per 30-doc zip) download timeout.
-    download_timeout_seconds: float = float(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "600"))
+    download_timeout_seconds: float = float(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "180"))
 
     # --- Cron ---
     # If true, the worker runs an in-process daily scheduler to re-check saved
