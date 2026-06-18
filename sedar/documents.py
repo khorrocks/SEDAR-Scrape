@@ -170,6 +170,23 @@ def _wait_for_download(driver, download_dir: Path, before: set[str], timeout: fl
     return None
 
 
+def _close_popups(driver, main_handle: str) -> None:
+    """Close any extra windows (the download fires via window.open(); those
+    popups otherwise pile up and eventually wedge the driver) and return focus
+    to the main window."""
+    try:
+        for h in list(driver.window_handles):
+            if h != main_handle:
+                driver.switch_to.window(h)
+                driver.close()
+        driver.switch_to.window(main_handle)
+    except Exception:
+        try:
+            driver.switch_to.window(main_handle)
+        except Exception:
+            pass
+
+
 def download_current_page(
     driver, download_dir: Path, timeout: float = 180.0
 ) -> str | None:
@@ -178,7 +195,11 @@ def download_current_page(
     Two-step action: the blue "Download documents" button opens a modal whose
     green "Download" button is the real trigger. Fails fast (rather than hanging)
     if the page is a Radware block, the controls are missing, or no file lands.
+    The download fires a window.open() popup; we close it afterwards so popups
+    don't accumulate and wedge the driver after a few batches.
     """
+    main_handle = driver.current_window_handle
+    _close_popups(driver, main_handle)  # clear any strays from a prior batch
     if is_blocked(driver):
         raise RuntimeError("Radware block page detected before download")
     if not _select_all_on_page(driver):
@@ -214,6 +235,7 @@ def download_current_page(
     ActionChains(driver).move_to_element(confirm[0]).pause(0.3).click(confirm[0]).perform()
 
     fname = _wait_for_download(driver, download_dir, before, timeout)
+    _close_popups(driver, main_handle)  # tidy the download popup before next batch
     if fname is None:
         raise RuntimeError(
             f"download produced no file within {timeout:.0f}s "
