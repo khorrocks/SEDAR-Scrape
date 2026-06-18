@@ -215,22 +215,36 @@ def download_current_page(
         raise RuntimeError(
             f"no 'Download documents' button (url={driver.current_url})"
         )
-    _log("clicking 'Download documents'")
-    _click(driver, triggers[0])
-    time.sleep(4)  # let the modal render
+    # The modal's confirmation button is labelled exactly "Download" (the blue
+    # opener is "Download documents", so an exact match excludes it). The modal
+    # can be slow to render, so poll for it and re-click the opener once.
+    def _find_confirm():
+        return [
+            b
+            for b in driver.find_elements(By.XPATH, "//button|//a")
+            if b.is_displayed() and b.text.strip() == "Download"
+        ]
 
-    # The modal's confirmation button is labelled exactly "Download". Use a
-    # *native* click (ActionChains) -- a scripted .click() does not always count
-    # as the trusted user gesture Chrome wants before starting a download.
-    confirm = [
-        b
-        for b in driver.find_elements(By.XPATH, "//button|//a")
-        if b.is_displayed() and b.text.strip() == "Download"
-    ]
+    confirm = []
+    for attempt in range(2):
+        _log(f"clicking 'Download documents' (attempt {attempt + 1})")
+        _click(driver, triggers[0])
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            confirm = _find_confirm()
+            if confirm:
+                break
+            if is_blocked(driver):
+                raise RuntimeError("Radware re-challenge when opening download modal")
+            time.sleep(1)
+        if confirm:
+            break
     if not confirm:
-        if is_blocked(driver):
-            raise RuntimeError("Radware re-challenge when opening download modal")
-        raise RuntimeError("download confirmation modal did not appear")
+        raise RuntimeError(
+            f"download confirmation modal did not appear (url={driver.current_url})"
+        )
+    # Native click (ActionChains) -- a scripted .click() doesn't always count as
+    # the trusted user gesture Chrome wants before starting a download.
     _log("clicking modal 'Download', waiting for zip")
     ActionChains(driver).move_to_element(confirm[0]).pause(0.3).click(confirm[0]).perform()
 
