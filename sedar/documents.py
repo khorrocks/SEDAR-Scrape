@@ -151,21 +151,20 @@ def _log(msg: str) -> None:
     print(f"[documents] {msg}", flush=True)
 
 
-def _wait_for_download(driver, download_dir: Path, before: set[str], timeout: float) -> str | None:
-    """Block until a new, complete (non-.crdownload) file appears. Bails early if
-    a Radware block page appears (a re-challenge would never produce a file)."""
+def _wait_for_download(download_dir: Path, before: set[str], timeout: float) -> str | None:
+    """Block until a new, complete (non-.crdownload) file appears, or timeout.
+
+    Pure filesystem polling on purpose: calling into WebDriver here can block
+    forever when Chrome is busy on a download, which would defeat the timeout."""
     deadline = time.time() + timeout
-    saw_partial = False
     while time.time() < deadline:
-        now = set(p.name for p in download_dir.iterdir())
-        added = now - before
-        new = [f for f in added if not f.endswith(".crdownload")]
+        new = [
+            f
+            for f in (set(p.name for p in download_dir.iterdir()) - before)
+            if not f.endswith(".crdownload")
+        ]
         if new:
             return new[0]
-        saw_partial = saw_partial or any(f.endswith(".crdownload") for f in added)
-        # If nothing has even started after a grace period and we're blocked, stop.
-        if not saw_partial and is_blocked(driver):
-            raise RuntimeError("Radware re-challenge appeared during download")
         time.sleep(2)
     return None
 
@@ -248,7 +247,7 @@ def download_current_page(
     _log("clicking modal 'Download', waiting for zip")
     ActionChains(driver).move_to_element(confirm[0]).pause(0.3).click(confirm[0]).perform()
 
-    fname = _wait_for_download(driver, download_dir, before, timeout)
+    fname = _wait_for_download(download_dir, before, timeout)
     _close_popups(driver, main_handle)  # tidy the download popup before next batch
     if fname is None:
         raise RuntimeError(
