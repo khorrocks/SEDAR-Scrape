@@ -395,7 +395,10 @@ def _run_job(job_id: int, holder: _DriverHolder) -> None:
         result = _with_recovery(
             db, job, holder,
             lambda d: scraper.download_company(
-                db, d, company, only_new=only_new, max_batches=max_batches, progress=progress
+                db, d, company, only_new=only_new, max_batches=max_batches, progress=progress,
+                # Resume from the checkpoint results page (fast-forward). Read
+                # fresh so a retry after a crash resumes from latest progress.
+                start_page=(job.batches_done or 0),
             ),
             count_fn=lambda: _doc_count(db, company.id),
         )

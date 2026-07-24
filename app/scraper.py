@@ -86,11 +86,17 @@ def download_company(
     only_new: bool = False,
     max_batches: int | None = None,
     progress: ProgressFn | None = None,
+    start_page: int = 0,
 ) -> dict:
     """Download a company's documents in batches of 30 and index them.
 
     ``only_new`` (recheck mode) stops once a page yields no new documents, which
     works because SEDAR+ lists newest filings first. Returns a summary dict.
+
+    ``start_page`` resumes an interrupted download: the worker persists the
+    current results page (in ``batches_done``), so on a restart we *fast-forward*
+    to that page instead of re-walking from page 1. Already-downloaded batches are
+    still skipped via the dedup ``known`` set, so nothing is re-fetched.
     """
     if not resolve_profile(driver, company):
         raise RuntimeError(
@@ -128,6 +134,23 @@ def download_company(
     batches = 0
     new_docs = 0
     page = 0
+
+    # Resume: fast-forward (no scraping/download) to the checkpoint results page
+    # so a restarted download continues where it stopped rather than re-walking
+    # from page 1. resolve_profile leaves us on page 1; safe by construction --
+    # an advance that lags lands earlier and re-scrapes (dedup skips known).
+    if start_page and start_page > 1:
+        page = 1
+        while page < start_page:
+            if progress:
+                # Keep batches_done pinned at the target so a crash during
+                # fast-forward still resumes there.
+                progress(start_page, new_docs, total, f"resuming: fast-forwarding to page {page}/{start_page}")
+            if not _advance_or_raise_if_blocked(driver, _FF_SETTLE):
+                break  # genuine end of results before the resume point
+            page += 1
+        page -= 1  # the loop's page += 1 below lands us back on this page
+
     while True:
         page += 1
         rows = docs.list_page_rows(driver)
@@ -182,12 +205,13 @@ def download_company(
             db.commit()
 
         if progress:
-            progress(batches, new_docs, total, f"page {page} ({len(page_new)} new)")
+            # batches_done carries the results page so a restart resumes here.
+            progress(page, new_docs, total, f"page {page} ({len(page_new)} new)")
 
         if max_batches and batches >= max_batches:
             break
         time.sleep(settings.batch_pause_seconds)
-        if not profiles.next_page(driver):
+        if not _advance_or_raise_if_blocked(driver, settle=8.0):
             break
 
     now = datetime.now(timezone.utc)
