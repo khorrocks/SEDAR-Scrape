@@ -26,6 +26,7 @@ from sqlalchemy import func, select
 from sedar import documents as sedar_docs
 
 from .models import (
+    JOB_PAUSED,
     KIND_DOWNLOAD,
     KIND_ENUMERATE,
     KIND_PROBE,
@@ -309,22 +310,36 @@ def _run_job(job_id: int, holder: _DriverHolder) -> None:
                     profile_type=params.get("profile_type"),
                     max_pages=params.get("max_pages"),
                     progress=progress,
-                    should_yield=lambda: q.has_pending_company_job(db),
+                    should_yield=lambda: (
+                        q.has_pending_company_job(db)
+                        or q.is_pause_requested(db, job.id)
+                    ),
                 ),
                 count_fn=lambda: _company_count(db),
             )
             if result.get("yielded"):
-                # Paused for a waiting download; requeue so it resumes once the
-                # queue drains (a fresh enumerate re-walks idempotently from top).
-                q.enqueue_enumerate(
-                    db,
-                    profile_type=params.get("profile_type"),
-                    max_pages=params.get("max_pages"),
-                )
-                job.message = (
-                    f"paused for pending downloads at {_company_count(db)} companies; "
-                    "queued a job to resume enumeration"
-                )
+                db.refresh(job)  # pick up pause_requested set via the API
+                if job.pause_requested:
+                    # Manual pause: park it in 'paused' (not requeued) so the
+                    # worker is free for other jobs; the UI resumes it later.
+                    job.status = JOB_PAUSED
+                    job.pause_requested = False
+                    job.message = (
+                        f"paused at {_company_count(db)} companies — resume from "
+                        "the catalog controls"
+                    )
+                else:
+                    # Auto-yield for a waiting download; requeue to resume once the
+                    # queue drains (a fresh enumerate re-walks idempotently from top).
+                    q.enqueue_enumerate(
+                        db,
+                        profile_type=params.get("profile_type"),
+                        max_pages=params.get("max_pages"),
+                    )
+                    job.message = (
+                        f"paused for pending downloads at {_company_count(db)} companies; "
+                        "queued a job to resume enumeration"
+                    )
             else:
                 job.message = (
                     f"catalog now holds {_company_count(db)} companies "

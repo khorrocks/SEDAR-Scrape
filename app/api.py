@@ -16,6 +16,7 @@ from .db import get_db
 from .models import (
     JOB_DONE,
     JOB_FAILED,
+    JOB_PAUSED,
     JOB_QUEUED,
     JOB_RUNNING,
     KIND_ENUMERATE,
@@ -85,7 +86,27 @@ def enumerate_catalog(req: EnumerateRequest, db: Session = Depends(get_db)):
     )
     if existing:
         return _job_out(existing)
+    # Resuming supersedes any manually-paused enumerate (a fresh run re-walks
+    # from the top idempotently), so retire paused ones to keep the queue clean.
+    for p in db.scalars(select(Job).where(Job.kind == KIND_ENUMERATE, Job.status == JOB_PAUSED)):
+        p.status = JOB_DONE
+        p.message = "resumed"
     job = q.enqueue_enumerate(db, profile_type=req.profile_type, max_pages=req.max_pages)
+    return _job_out(job)
+
+
+@router.post("/jobs/{job_id}/pause", response_model=JobOut)
+def pause_job(job_id: int, db: Session = Depends(get_db)):
+    """Ask a running enumerate to pause at its next page checkpoint, freeing the
+    worker for other jobs. Resume by launching enumerate again."""
+    job = db.get(Job, job_id)
+    if job is None:
+        raise HTTPException(404, "job not found")
+    if job.kind != KIND_ENUMERATE or job.status != JOB_RUNNING:
+        raise HTTPException(409, "only a running enumerate can be paused")
+    job.pause_requested = True
+    job.message = "pausing at the next page…"
+    db.commit()
     return _job_out(job)
 
 
@@ -191,7 +212,7 @@ def list_queue(
     limit: int = Query(50, le=200),
     db: Session = Depends(get_db),
 ):
-    statuses = [JOB_QUEUED, JOB_RUNNING]
+    statuses = [JOB_QUEUED, JOB_RUNNING, JOB_PAUSED]
     if include_finished:
         statuses += [JOB_DONE, JOB_FAILED]
     stmt = (
@@ -201,9 +222,9 @@ def list_queue(
         .limit(limit)
     )
     jobs = list(db.scalars(stmt))
-    # Stable ordering: active (queued/running) by FIFO, then finished by recency.
+    # Stable ordering: active (queued/running/paused) by FIFO, then finished by recency.
     active = sorted(
-        [j for j in jobs if j.status in (JOB_QUEUED, JOB_RUNNING)],
+        [j for j in jobs if j.status in (JOB_QUEUED, JOB_RUNNING, JOB_PAUSED)],
         key=lambda j: j.created_at,
     )
     finished = sorted(

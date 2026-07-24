@@ -41,6 +41,7 @@ _ADDED_COLUMNS = {
     },
     "jobs": {
         "blocked": "BOOLEAN DEFAULT 0",
+        "pause_requested": "BOOLEAN DEFAULT 0",
     },
 }
 

@@ -39,6 +39,7 @@ JOB_RUNNING = "running"
 JOB_DONE = "done"
 JOB_FAILED = "failed"
 JOB_CANCELLED = "cancelled"
+JOB_PAUSED = "paused"  # a manually paused enumerate; resume re-queues it
 
 # Job kinds
 KIND_DOWNLOAD = "download_company"   # full download, all docs in batches of 30
@@ -112,6 +113,10 @@ class Job(Base):
     # True while the job is paused on a Radware/captcha block waiting for a
     # human to solve it in the live browser view (status stays 'running').
     blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Set by the API to ask a running enumerate to pause at its next page
+    # checkpoint; the worker then parks it in status 'paused' (not requeued).
+    pause_requested: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # Progress, surfaced in the queue view.
     batches_done: Mapped[int] = mapped_column(Integer, default=0)

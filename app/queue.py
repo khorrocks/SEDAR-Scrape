@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from .models import (
     JOB_DONE,
     JOB_FAILED,
+    JOB_PAUSED,
     JOB_QUEUED,
     JOB_RUNNING,
     KIND_DOWNLOAD,
@@ -83,6 +84,11 @@ def has_pending_company_job(db: Session) -> bool:
     ) is not None
 
 
+def is_pause_requested(db: Session, job_id: int) -> bool:
+    """Fresh read of a job's pause flag (set by the API from another session)."""
+    return bool(db.scalar(select(Job.pause_requested).where(Job.id == job_id)))
+
+
 def claim_next_job(db: Session) -> Job | None:
     """Atomically take the next queued job and mark it running.
 
@@ -109,6 +115,10 @@ def claim_next_job(db: Session) -> Job | None:
 
 
 def finish_job(db: Session, job: Job, *, ok: bool, error: str | None = None) -> None:
+    # A job the worker parked as 'paused' (manual pause) must not be flipped to
+    # done/failed by the run loop; leave it so it can be resumed.
+    if job.status == JOB_PAUSED:
+        return
     job.status = JOB_DONE if ok else JOB_FAILED
     job.error = error
     job.blocked = False

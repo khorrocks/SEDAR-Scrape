@@ -127,13 +127,43 @@ el("enumerate-btn").addEventListener("click", async () => {
   loadQueue();
 });
 
-// Reflect an in-flight enumerate on the button so it can't be double-queued.
+el("enumerate-pause-btn").addEventListener("click", async (e) => {
+  const id = e.currentTarget.dataset.jobId;
+  if (!id) return;
+  e.currentTarget.disabled = true;
+  try { await api(`/jobs/${id}/pause`, { method: "POST" }); }
+  catch (err) { alert("Could not pause: " + err.message); }
+  loadQueue();
+});
+
+// Reflect enumerate state on the controls: running -> Pause; paused -> Resume;
+// otherwise -> Build/refresh. Prevents double-queueing a second full run.
 function updateEnumerateControls(jobs) {
-  const en = jobs.find((j) => j.kind === "enumerate_catalog" && (j.status === "queued" || j.status === "running"));
-  el("enumerate-btn").disabled = !!en;
-  el("enumerate-hint").textContent = en
-    ? (en.status === "running" ? "running — " + clip(en.message || "…", 60) : "queued…")
-    : "";
+  const running = jobs.find((j) => j.kind === "enumerate_catalog" && j.status === "running");
+  const queued = jobs.find((j) => j.kind === "enumerate_catalog" && j.status === "queued");
+  const paused = jobs.find((j) => j.kind === "enumerate_catalog" && j.status === "paused");
+  const btn = el("enumerate-btn");
+  const pauseBtn = el("enumerate-pause-btn");
+  const hint = el("enumerate-hint");
+  if (running || queued) {
+    btn.hidden = true;
+    pauseBtn.hidden = !running;
+    if (running) {
+      pauseBtn.dataset.jobId = running.id;
+      pauseBtn.disabled = !!running.pause_requested;
+    }
+    hint.textContent = running ? "running — " + clip(running.message || "…", 60) : "queued…";
+  } else if (paused) {
+    btn.hidden = false;
+    btn.textContent = "▶ Resume enumeration";
+    pauseBtn.hidden = true;
+    hint.textContent = "paused — " + clip(paused.message || "", 60);
+  } else {
+    btn.hidden = false;
+    btn.textContent = "↻ Build / refresh company catalog";
+    pauseBtn.hidden = true;
+    hint.textContent = "";
+  }
 }
 
 // --------------------------------------------------------------------------

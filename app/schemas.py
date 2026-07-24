@@ -44,6 +44,7 @@ class JobOut(BaseModel):
     kind: str
     status: str
     blocked: bool = False
+    pause_requested: bool = False
     company_id: int | None = None
     company_name: str | None = None
     batches_done: int = 0
