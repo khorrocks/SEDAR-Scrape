@@ -46,6 +46,26 @@ def cmd_enumerate(args) -> int:
     return 0
 
 
+def cmd_reset(args) -> int:
+    """Wipe DB state (jobs, documents, companies) for a fresh start. Leaves R2
+    objects untouched. Requires --yes to actually run."""
+    if not args.yes:
+        print("refusing to reset without --yes (this deletes ALL companies, "
+              "jobs, and documents from the DB; R2 is untouched)")
+        return 1
+    from sqlalchemy import delete
+    from .models import Document, Job
+
+    init_db()
+    with session_scope() as db:
+        n_docs = db.execute(delete(Document)).rowcount
+        n_jobs = db.execute(delete(Job)).rowcount
+        n_companies = db.execute(delete(Company)).rowcount
+    print(f"reset: deleted {n_docs} documents, {n_jobs} jobs, "
+          f"{n_companies} companies (R2 untouched)")
+    return 0
+
+
 def cmd_recheck_all(_args) -> int:
     init_db()
     with session_scope() as db:
@@ -130,6 +150,10 @@ def main(argv=None) -> int:
     sub.add_parser("recheck-all", help="Queue rechecks for all saved companies").set_defaults(
         func=cmd_recheck_all
     )
+
+    r = sub.add_parser("reset", help="Wipe DB state (jobs, documents, companies); R2 untouched")
+    r.add_argument("--yes", action="store_true", help="confirm the destructive reset")
+    r.set_defaults(func=cmd_reset)
 
     s = sub.add_parser("smoke", help="Live one-company download test (no worker)")
     s.add_argument("--number", default="000003771", help="Issuer number (folder/DB key)")

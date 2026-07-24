@@ -41,6 +41,9 @@ main { max-width: 1100px; margin: 0 auto; padding: 24px 28px; }
 .add-row #add-number { width: 160px; }
 .add-row #add-name { flex: 1; min-width: 140px; }
 .add-row input.mini { width: 120px; }
+.test-toggle { display: inline-flex; align-items: center; gap: 7px; margin-top: 10px;
+  font-size: 13px; color: var(--muted); cursor: pointer; }
+.test-toggle input { accent-color: var(--accent); }
 .hint code { background: var(--panel-2); border: 1px solid var(--border);
   border-radius: 5px; padding: 1px 5px; font-size: 12px; }
 

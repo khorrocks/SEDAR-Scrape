@@ -175,6 +175,10 @@ python -m app.manage enumerate --type Company
 Key env vars: `DATA_DIR` (default `/data` in Docker), `DATABASE_URL`, `CHROME_BINARY`
 (set to `/usr/bin/google-chrome` in the image), `HEADLESS` (leave `false`),
 `BATCH_PAUSE_SECONDS`, `DOWNLOAD_TIMEOUT_SECONDS`, `WORKER_POLL_SECONDS`.
+Test/ops: `MAX_BATCHES` (cap every download to N 30-doc batches — set `1` to test
+without pulling a company's full history; a per-request `max_batches` overrides it),
+`ADMIN_TOKEN` (enables `POST /api/admin/reset`, which wipes jobs/companies/documents
+from the DB — R2 is left untouched; the request must send a matching `X-Admin-Token`).
 For R2 storage: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
 `R2_BUCKET` (default `smallcap-kb`), `R2_PREFIX` (default `kb/`) — see
 [Cloudflare R2 storage](#cloudflare-r2-storage).

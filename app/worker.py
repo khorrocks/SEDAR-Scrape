@@ -265,9 +265,15 @@ def _run_job(job_id: int, holder: _DriverHolder) -> None:
             raise RuntimeError(f"job {job.id} references missing company {job.company_id}")
 
         only_new = job.kind == KIND_RECHECK
+        params = json.loads(job.params or "{}")
+        req_max = params.get("max_batches")
+        # Per-job cap wins; otherwise the global test-mode default (may be None).
+        max_batches = req_max if req_max is not None else settings.default_max_batches
         result = _with_recovery(
             db, job, holder,
-            lambda d: scraper.download_company(db, d, company, only_new=only_new, progress=progress),
+            lambda d: scraper.download_company(
+                db, d, company, only_new=only_new, max_batches=max_batches, progress=progress
+            ),
             count_fn=lambda: _doc_count(db, company.id),
         )
         job.message = (

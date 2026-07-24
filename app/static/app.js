@@ -96,11 +96,12 @@ async function addByNumber() {
     (exchange ? el("add-ticker") : el("add-exchange")).focus();
     return;
   }
+  const maxBatches = el("test-mode").checked ? 1 : null;
   try {
     await api(`/companies/add`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ number, name: name || null, exchange, ticker, download: true }),
+      body: JSON.stringify({ number, name: name || null, exchange, ticker, download: true, max_batches: maxBatches }),
     });
   } catch (e) { alert("Could not add company: " + e.message); return; }
   hideSuggestions();
@@ -239,7 +240,11 @@ async function openDrawer(id, name) {
 el("drawer-close").addEventListener("click", () => { el("drawer").hidden = true; });
 el("drawer").addEventListener("click", (e) => { if (e.target.id === "drawer") el("drawer").hidden = true; });
 el("btn-redownload").addEventListener("click", async () => {
-  if (drawerCompanyId) { await api(`/companies/${drawerCompanyId}/download`, { method: "POST" }); loadQueue(); }
+  if (drawerCompanyId) {
+    const qs = el("test-mode").checked ? "?max_batches=1" : "";
+    await api(`/companies/${drawerCompanyId}/download${qs}`, { method: "POST" });
+    loadQueue();
+  }
 });
 el("btn-recheck").addEventListener("click", async () => {
   if (drawerCompanyId) { await api(`/companies/${drawerCompanyId}/recheck`, { method: "POST" }); loadQueue(); }

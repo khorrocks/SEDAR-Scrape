@@ -32,20 +32,30 @@ def _active_job_for_company(db: Session, company_id: int) -> Job | None:
     )
 
 
-def enqueue_download(db: Session, company: Company, kind: str = KIND_DOWNLOAD) -> Job:
-    """Queue a download (or recheck) for a company, unless one is already active."""
+def enqueue_download(
+    db: Session,
+    company: Company,
+    kind: str = KIND_DOWNLOAD,
+    max_batches: int | None = None,
+) -> Job:
+    """Queue a download (or recheck) for a company, unless one is already active.
+
+    ``max_batches`` caps how many 30-doc batches to pull (test mode); None means
+    use the global default (``settings.default_max_batches``, also possibly None).
+    """
     existing = _active_job_for_company(db, company.id)
     if existing:
         return existing
-    job = Job(kind=kind, company_id=company.id, status=JOB_QUEUED)
+    params = json.dumps({"max_batches": max_batches}) if max_batches is not None else None
+    job = Job(kind=kind, company_id=company.id, status=JOB_QUEUED, params=params)
     db.add(job)
     db.commit()
     db.refresh(job)
     return job
 
 
-def enqueue_recheck(db: Session, company: Company) -> Job:
-    return enqueue_download(db, company, kind=KIND_RECHECK)
+def enqueue_recheck(db: Session, company: Company, max_batches: int | None = None) -> Job:
+    return enqueue_download(db, company, kind=KIND_RECHECK, max_batches=max_batches)
 
 
 def enqueue_enumerate(db: Session, profile_type: str = "Company",

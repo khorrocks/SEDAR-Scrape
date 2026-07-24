@@ -5,9 +5,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import FileResponse, RedirectResponse
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from . import r2
@@ -104,7 +104,7 @@ def add_company(req: AddCompanyRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(company)
     if req.download:
-        return _job_out(q.enqueue_download(db, company))
+        return _job_out(q.enqueue_download(db, company, max_batches=req.max_batches))
     return CompanyOut.model_validate(company)
 
 
@@ -131,7 +131,7 @@ def save_company(company_id: int, req: SaveRequest, db: Session = Depends(get_db
     company.saved = True
     db.commit()
     if req.download:
-        job = q.enqueue_download(db, company)
+        job = q.enqueue_download(db, company, max_batches=req.max_batches)
         return _job_out(job)
     return CompanyOut.model_validate(company)
 
@@ -145,9 +145,13 @@ def unsave_company(company_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/companies/{company_id}/download", response_model=JobOut)
-def download_company(company_id: int, db: Session = Depends(get_db)):
+def download_company(
+    company_id: int,
+    max_batches: int | None = Query(None, description="test mode: cap 30-doc batches"),
+    db: Session = Depends(get_db),
+):
     company = _get_company(db, company_id)
-    job = q.enqueue_download(db, company)
+    job = q.enqueue_download(db, company, max_batches=max_batches)
     return _job_out(job)
 
 
@@ -295,3 +299,33 @@ def recheck_all(db: Session = Depends(get_db)):
     companies = list(db.scalars(select(Company).where(Company.saved.is_(True))))
     jobs = [q.enqueue_recheck(db, c) for c in companies]
     return {"queued": len(jobs), "job_ids": [j.id for j in jobs]}
+
+
+# --------------------------------------------------------------------------- #
+# Admin (destructive; gated behind ADMIN_TOKEN)
+# --------------------------------------------------------------------------- #
+@router.post("/admin/reset")
+def admin_reset(
+    x_admin_token: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """Wipe the app's database state — jobs (queue), documents, and companies
+    (saved + catalog) — for a fresh start. Does NOT touch R2 objects.
+
+    Disabled unless ADMIN_TOKEN is set; the request must send a matching
+    X-Admin-Token header.
+    """
+    if not settings.admin_token:
+        raise HTTPException(403, "admin reset is disabled (set ADMIN_TOKEN to enable)")
+    if x_admin_token != settings.admin_token:
+        raise HTTPException(401, "invalid admin token")
+    # Delete children before parents to satisfy foreign keys.
+    n_docs = db.execute(delete(Document)).rowcount
+    n_jobs = db.execute(delete(Job)).rowcount
+    n_companies = db.execute(delete(Company)).rowcount
+    db.commit()
+    return {
+        "reset": True,
+        "deleted": {"documents": n_docs, "jobs": n_jobs, "companies": n_companies},
+        "note": "R2 objects were not touched",
+    }

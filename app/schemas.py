@@ -67,6 +67,8 @@ class SaveRequest(BaseModel):
     # Exchange + ticker name the company's R2 folder (<exchange>-<ticker>).
     exchange: str | None = None
     ticker: str | None = None
+    # Test mode: cap the download to this many 30-doc batches (None = all).
+    max_batches: int | None = None
 
 
 class AddCompanyRequest(BaseModel):
@@ -78,3 +80,5 @@ class AddCompanyRequest(BaseModel):
     exchange: str | None = None
     ticker: str | None = None
     download: bool = True
+    # Test mode: cap the download to this many 30-doc batches (None = all).
+    max_batches: int | None = None

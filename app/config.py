@@ -49,6 +49,14 @@ class Settings:
     max_download_attempts: int = int(os.getenv("MAX_DOWNLOAD_ATTEMPTS", "15"))
     # Per-batch (per 30-doc zip) download timeout.
     download_timeout_seconds: float = float(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "180"))
+    # Global "test mode": cap every download to this many 30-doc batches. Unset
+    # (None) means download everything. A per-request max_batches overrides this.
+    default_max_batches: int | None = _int("MAX_BATCHES", None)
+
+    # --- Admin ---
+    # Token gating destructive admin endpoints (e.g. POST /api/admin/reset).
+    # Unset => those endpoints are disabled (return 403).
+    admin_token: str | None = os.getenv("ADMIN_TOKEN") or None
 
     # --- Cloudflare R2 (S3-compatible object storage) ---
     # Scraped batch zips land in R2 under <prefix>/<exchange>-<ticker>/raw-data/.
