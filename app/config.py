@@ -53,6 +53,13 @@ class Settings:
     # (None) means download everything. A per-request max_batches overrides this.
     default_max_batches: int | None = _int("MAX_BATCHES", None)
 
+    # --- Watchdog ---
+    # If a job makes no progress for this long, the worker hard-exits so the
+    # start.sh supervisor restarts it (and requeue_stuck resumes the job). Guards
+    # against a frozen browser/worker that the in-process self-heal can't catch.
+    # Set generously above the per-batch download timeout; 0 disables it.
+    watchdog_seconds: float = float(os.getenv("WATCHDOG_SECONDS", "420"))
+
     # --- Admin ---
     # Token gating destructive admin endpoints (e.g. POST /api/admin/reset).
     # Unset => those endpoints are disabled (return 403).

@@ -15,7 +15,9 @@ On a headless server it must run under Xvfb so real (non-headless) Chrome works:
 from __future__ import annotations
 
 import json
+import os
 import signal
+import threading
 import time
 import traceback
 
@@ -102,6 +104,7 @@ def _with_recovery(db, job, holder, do_work, count_fn):
     stalls = 0
     while True:
         attempts += 1
+        _beat()  # starting an attempt counts as being alive
         before = count_fn()
         try:
             return do_work(holder.get())
@@ -141,6 +144,33 @@ from . import queue as q
 from . import scraper
 
 _RUNNING = True
+
+# Watchdog heartbeat: the main loop stamps _last_beat as it makes progress; a
+# daemon thread hard-exits the process if a claimed job goes quiet for too long
+# (a freeze the in-process self-heal can't catch), so the start.sh supervisor
+# restarts us and requeue_stuck resumes the job.
+_last_beat = time.time()
+_active_job_id = None
+
+
+def _beat() -> None:
+    global _last_beat
+    _last_beat = time.time()
+
+
+def _watchdog() -> None:
+    while _RUNNING:
+        time.sleep(30)
+        if not settings.watchdog_seconds or _active_job_id is None:
+            continue
+        idle = time.time() - _last_beat
+        if idle > settings.watchdog_seconds:
+            print(
+                f"[watchdog] job {_active_job_id}: no progress for {int(idle)}s "
+                f"(> {int(settings.watchdog_seconds)}s) — hard-exiting to force a restart",
+                flush=True,
+            )
+            os._exit(1)  # supervisor (start.sh) restarts; requeue_stuck resumes
 
 
 def _stop(*_a):
@@ -289,6 +319,7 @@ def _run_job(job_id: int, holder: _DriverHolder) -> None:
             return
 
         def progress(batches, done, total, msg):
+            _beat()  # progress = the worker is alive; keep the watchdog happy
             job.batches_done = batches
             job.documents_done = done
             job.total_documents = total
@@ -386,9 +417,14 @@ def run_forever() -> None:
             print(f"[worker] requeued {n} stuck job(s) from a previous run")
 
     print("[worker] started; polling for jobs")
+    if settings.watchdog_seconds:
+        threading.Thread(target=_watchdog, daemon=True).start()
+        print(f"[worker] watchdog armed at {int(settings.watchdog_seconds)}s")
     holder = _DriverHolder()
+    global _active_job_id
     try:
         while _RUNNING:
+            _beat()
             job_id = None
             with session_scope() as db:
                 job = q.claim_next_job(db)
@@ -396,10 +432,13 @@ def run_forever() -> None:
                     job_id = job.id
                     kind = job.kind
             if job_id is None:
+                _active_job_id = None
                 time.sleep(settings.worker_poll_seconds)
                 continue
 
             print(f"[worker] running job {job_id} ({kind})")
+            _active_job_id = job_id  # arm the watchdog for this job
+            _beat()
             try:
                 _run_job(job_id, holder)
                 with session_scope() as db:
@@ -413,6 +452,8 @@ def run_forever() -> None:
                 holder.reset()  # browser may be in a bad state; rebuild next job
                 with session_scope() as db:
                     q.finish_job(db, db.get(Job, job_id), ok=False, error=err)
+            finally:
+                _active_job_id = None  # disarm between jobs
     finally:
         holder.reset()
         print("[worker] stopped")

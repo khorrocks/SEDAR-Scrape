@@ -40,11 +40,18 @@ else
 fi
 x11vnc "${VNC_ARGS[@]}" || echo "[start] WARN: x11vnc failed to start (live view unavailable)"
 
-echo "[start] launching worker (DISPLAY=$DISPLAY)"
-python -m app.worker &
+echo "[start] launching worker supervisor (DISPLAY=$DISPLAY)"
+# Supervisor loop: if the worker exits (crash, OOM-kill, or the watchdog's
+# hard-exit on a freeze), restart it. On restart requeue_stuck_jobs resumes any
+# job left 'running', so a stuck download self-recovers without a manual reboot.
+( while true; do
+    python -m app.worker
+    echo "[start] worker exited (code $?); restarting in 3s" >&2
+    sleep 3
+  done ) &
 WORKER_PID=$!
 
-# If the worker dies, take the container down so the platform restarts it.
+# On container shutdown, stop the supervisor (and its worker child).
 trap 'kill $WORKER_PID 2>/dev/null || true' EXIT
 
 echo "[start] launching web on :$PORT"

@@ -195,6 +195,10 @@ python -m app.manage enumerate --type Company
 Key env vars: `DATA_DIR` (default `/data` in Docker), `DATABASE_URL`, `CHROME_BINARY`
 (set to `/usr/bin/google-chrome` in the image), `HEADLESS` (leave `false`),
 `BATCH_PAUSE_SECONDS`, `DOWNLOAD_TIMEOUT_SECONDS`, `WORKER_POLL_SECONDS`.
+Reliability: the worker runs under a `start.sh` supervisor loop (auto-restarts if it
+crashes/OOMs) plus a `WATCHDOG_SECONDS` watchdog (default 420; hard-exits a frozen
+worker so the supervisor restarts it). On restart, `requeue_stuck_jobs` resumes any
+job left `running`, so a stuck download self-recovers without a manual reboot.
 Test/ops: `MAX_BATCHES` (cap every download to N 30-doc batches — set `1` to test
 without pulling a company's full history; a per-request `max_batches` overrides it),
 `ADMIN_TOKEN` (enables `POST /api/admin/reset`, which wipes jobs/companies/documents
