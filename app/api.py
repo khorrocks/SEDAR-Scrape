@@ -6,10 +6,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from . import r2
 from .config import settings
 from .db import get_db
 from .models import (
@@ -95,6 +96,10 @@ def add_company(req: AddCompanyRequest, db: Session = Depends(get_db)):
         db.add(company)
     elif req.name:
         company.name = req.name.strip()
+    if req.exchange is not None:
+        company.exchange = req.exchange.strip() or None
+    if req.ticker is not None:
+        company.ticker = req.ticker.strip() or None
     company.saved = True
     db.commit()
     db.refresh(company)
@@ -119,6 +124,10 @@ def _get_company(db: Session, company_id: int) -> Company:
 @router.post("/companies/{company_id}/save", response_model=JobOut | CompanyOut)
 def save_company(company_id: int, req: SaveRequest, db: Session = Depends(get_db)):
     company = _get_company(db, company_id)
+    if req.exchange is not None:
+        company.exchange = req.exchange.strip() or None
+    if req.ticker is not None:
+        company.ticker = req.ticker.strip() or None
     company.saved = True
     db.commit()
     if req.download:
@@ -211,15 +220,57 @@ def cancel_job(job_id: int, db: Session = Depends(get_db)):
 # --------------------------------------------------------------------------- #
 @router.get("/files/download")
 def download_file(path: str = Query(...)):
-    """Serve a downloaded zip. ``path`` is relative to the data dir; we resolve
-    and confirm it stays inside data_dir to prevent traversal."""
+    """Serve a downloaded zip. ``path`` is a Document.batch_zip value: either a
+    data-dir-relative local path (local mode) or an absolute R2 object key
+    (R2 mode). We try local disk first, then redirect to a presigned R2 URL."""
     base = settings.data_dir.resolve()
     target = (base / path).resolve()
-    if base not in target.parents and target != base:
-        raise HTTPException(400, "invalid path")
-    if not target.is_file():
-        raise HTTPException(404, "file not found")
-    return FileResponse(target, filename=target.name, media_type="application/zip")
+    if (base in target.parents or target == base) and target.is_file():
+        return FileResponse(target, filename=target.name, media_type="application/zip")
+
+    # Not on local disk: if it's an R2 key under our root prefix, presign it.
+    if settings.r2_enabled and r2.to_relative(path) is not None:
+        return RedirectResponse(r2.presigned_url(path))
+
+    raise HTTPException(404, "file not found")
+
+
+# --------------------------------------------------------------------------- #
+# R2 viewer (read-only browse of the object store, rooted at <bucket>/<prefix>)
+# --------------------------------------------------------------------------- #
+@router.get("/r2/status")
+def r2_status():
+    """Whether R2 is configured, plus the root the viewer is anchored at."""
+    return {
+        "enabled": settings.r2_enabled,
+        "bucket": settings.r2_bucket if settings.r2_enabled else None,
+        "prefix": settings.r2_root_prefix if settings.r2_enabled else None,
+    }
+
+
+@router.get("/r2/list")
+def r2_list(path: str = Query("", description="folder path relative to the root prefix")):
+    """List immediate subfolders + files under the given path. Read-only."""
+    if not settings.r2_enabled:
+        raise HTTPException(503, "R2 is not configured")
+    try:
+        return r2.list_dir(path)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/r2/object")
+def r2_object(path: str = Query(..., description="object path relative to the root prefix")):
+    """Redirect to a short-lived presigned URL for one object. Read-only."""
+    if not settings.r2_enabled:
+        raise HTTPException(503, "R2 is not configured")
+    try:
+        key = r2.full_key(path)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not r2.object_exists(key):
+        raise HTTPException(404, "object not found")
+    return RedirectResponse(r2.presigned_url(key))
 
 
 @router.post("/debug/probe", response_model=JobOut)

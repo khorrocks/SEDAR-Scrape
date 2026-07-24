@@ -23,11 +23,16 @@
       <p class="hint" id="catalog-hint"></p>
 
       <div class="add-row">
-        <span class="add-label">Not listed? Add by SEDAR number:</span>
-        <input id="add-number" type="text" inputmode="numeric" placeholder="e.g. 000003771" />
+        <span class="add-label">Add a company:</span>
+        <input id="add-exchange" type="text" class="mini" placeholder="Exchange (tsxv)" />
+        <input id="add-ticker" type="text" class="mini" placeholder="Ticker (sprq)" />
+        <input id="add-number" type="text" inputmode="numeric" placeholder="SEDAR # e.g. 000003771" />
         <input id="add-name" type="text" placeholder="Name (optional)" />
         <button id="add-btn" class="small">Add &amp; download</button>
       </div>
+      <p class="hint">Exchange + ticker name the R2 folder:
+        <code>&lt;exchange&gt;-&lt;ticker&gt;/raw-data/</code>. Pick a company from the
+        list above to prefill its number.</p>
     </section>
 
     <div class="columns">
@@ -42,6 +47,16 @@
         <div id="queue" class="queue"></div>
       </section>
     </div>
+
+    <section class="panel r2-panel">
+      <div class="r2-head">
+        <h2>R2 Viewer</h2>
+        <button id="r2-refresh" class="ghost small">refresh</button>
+      </div>
+      <div id="r2-status" class="hint"></div>
+      <nav id="r2-breadcrumb" class="breadcrumb"></nav>
+      <div id="r2-listing" class="r2-listing"></div>
+    </section>
   </main>
 
   <!-- Company documents drawer -->

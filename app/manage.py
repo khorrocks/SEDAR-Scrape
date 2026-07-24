@@ -79,6 +79,11 @@ def cmd_smoke(args) -> int:
             company.profile_id = args.profile_id
             from sedar import documents as _docs
             company.profile_url = _docs.PROFILE_URL.format(profile_id=args.profile_id)
+        # Needed to name the R2 folder when R2 is configured; harmless otherwise.
+        if args.exchange:
+            company.exchange = args.exchange
+        if args.ticker:
+            company.ticker = args.ticker
         company.saved = True
         db.flush()
         company_id = company.id
@@ -135,6 +140,10 @@ def main(argv=None) -> int:
                    help="profile.html id (verified path). Use '' to test the Number bridge instead")
     s.add_argument("--max-batches", type=int, default=1,
                    help="Cap zip batches to download (default 1; None-equivalent: large number)")
+    s.add_argument("--exchange", default="test",
+                   help="Exchange for the R2 folder slug (used only when R2 is configured)")
+    s.add_argument("--ticker", default="hmr",
+                   help="Ticker for the R2 folder slug (used only when R2 is configured)")
     s.set_defaults(func=cmd_smoke)
 
     args = p.parse_args(argv)

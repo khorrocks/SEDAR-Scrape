@@ -61,6 +61,11 @@ class Company(Base):
     jurisdiction: Mapped[str | None] = mapped_column(String(128), nullable=True)
     type: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # Exchange + ticker (e.g. "TSXV" + "SPRQ") together name the company's R2
+    # folder: <prefix>/<exchange>-<ticker>/raw-data/. Supplied by the user.
+    exchange: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    ticker: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
     # The opaque profile.html?id=<hash> URL, captured via the "Generate URL"
     # action when we first download. May be null if we drive by number instead.
     profile_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -79,6 +84,15 @@ class Company(Base):
     jobs: Mapped[list["Job"]] = relationship(
         back_populates="company", cascade="all, delete-orphan"
     )
+
+    @property
+    def folder_slug(self) -> str | None:
+        """The R2 folder name, e.g. 'tsxv-sprq'. None until both exchange and
+        ticker are set (a download to R2 requires it)."""
+        if self.exchange and self.ticker:
+            slug = f"{self.exchange.strip()}-{self.ticker.strip()}".lower()
+            return slug or None
+        return None
 
 
 class Job(Base):

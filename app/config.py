@@ -50,6 +50,21 @@ class Settings:
     # Per-batch (per 30-doc zip) download timeout.
     download_timeout_seconds: float = float(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "180"))
 
+    # --- Cloudflare R2 (S3-compatible object storage) ---
+    # Scraped batch zips land in R2 under <prefix>/<exchange>-<ticker>/raw-data/.
+    # Leave the credentials unset to keep everything on local disk instead.
+    r2_account_id: str | None = os.getenv("R2_ACCOUNT_ID") or None
+    r2_access_key_id: str | None = os.getenv("R2_ACCESS_KEY_ID") or None
+    r2_secret_access_key: str | None = os.getenv("R2_SECRET_ACCESS_KEY") or None
+    # Bucket + key prefix. The R2 viewer is rooted at "<bucket>/<prefix>".
+    r2_bucket: str = os.getenv("R2_BUCKET", "smallcap-kb")
+    r2_prefix: str = os.getenv("R2_PREFIX", "kb/")
+    # Override the endpoint if you use a custom/jurisdiction-specific R2 host;
+    # otherwise it is derived from the account id.
+    r2_endpoint: str | None = os.getenv("R2_ENDPOINT") or None
+    # How long presigned view/download links stay valid.
+    r2_url_expiry_seconds: int = int(os.getenv("R2_URL_EXPIRY_SECONDS", "3600"))
+
     # --- Cron ---
     # If true, the worker runs an in-process daily scheduler to re-check saved
     # companies for new documents. On Railway you can instead use a Cron service
@@ -60,6 +75,26 @@ class Settings:
     @property
     def download_dir(self) -> Path:
         return self.data_dir / "downloads"
+
+    @property
+    def r2_enabled(self) -> bool:
+        """True only when all three credentials are present; otherwise the app
+        falls back to local-disk storage."""
+        return bool(
+            self.r2_account_id
+            and self.r2_access_key_id
+            and self.r2_secret_access_key
+        )
+
+    @property
+    def r2_endpoint_url(self) -> str:
+        return self.r2_endpoint or f"https://{self.r2_account_id}.r2.cloudflarestorage.com"
+
+    @property
+    def r2_root_prefix(self) -> str:
+        """The bucket-relative prefix the viewer is rooted at, e.g. 'kb/'."""
+        p = (self.r2_prefix or "").strip("/")
+        return f"{p}/" if p else ""
 
     @property
     def resolved_database_url(self) -> str:

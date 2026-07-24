@@ -83,6 +83,32 @@ UI:
   downloaded batch zips.
 - **Scheduled re-check**: a cron re-checks every saved company for *new* documents
   (newest-first, so it stops once it reaches already-downloaded filings).
+- **Cloudflare R2 storage + viewer**: scraped zips are uploaded to R2 (the local
+  copy is deleted), and a read-only **R2 Viewer** panel browses the bucket.
+
+### Cloudflare R2 storage
+
+When R2 credentials are configured, R2 is the source of truth for scraped data.
+Each saved company carries an **exchange** and **ticker** (e.g. `tsxv` + `sprq`),
+which together name its folder. Downloads land as:
+
+```
+<bucket>/<prefix>/<exchange>-<ticker>/raw-data/<timestamp>_batchNNNN.zip
+e.g.    smallcap-kb/kb/tsxv-sprq/raw-data/20260724T120000Z_batch0001.zip
+```
+
+The worker uploads each batch zip, then deletes the local copy to keep the volume
+small; document links in the UI redirect to short-lived presigned R2 URLs. The
+**R2 Viewer** panel is rooted at `<bucket>/<prefix>` (default `smallcap-kb/kb/`)
+and lets you browse folders/files read-only.
+
+If the R2 credentials are **absent**, everything falls back to local disk under
+`DATA_DIR` exactly as before (no exchange/ticker required).
+
+R2 env vars: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`
+(all three required to enable R2), `R2_BUCKET` (default `smallcap-kb`),
+`R2_PREFIX` (default `kb/`), `R2_ENDPOINT` (optional override),
+`R2_URL_EXPIRY_SECONDS` (presigned link lifetime, default 3600).
 
 ### Architecture
 
@@ -149,6 +175,9 @@ python -m app.manage enumerate --type Company
 Key env vars: `DATA_DIR` (default `/data` in Docker), `DATABASE_URL`, `CHROME_BINARY`
 (set to `/usr/bin/google-chrome` in the image), `HEADLESS` (leave `false`),
 `BATCH_PAUSE_SECONDS`, `DOWNLOAD_TIMEOUT_SECONDS`, `WORKER_POLL_SECONDS`.
+For R2 storage: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
+`R2_BUCKET` (default `smallcap-kb`), `R2_PREFIX` (default `kb/`) — see
+[Cloudflare R2 storage](#cloudflare-r2-storage).
 
 > **Verification note:** the web app, DB, serial queue, and API are tested. The
 > browser bridge that turns a saved company's *Number* into a document download

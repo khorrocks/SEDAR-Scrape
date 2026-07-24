@@ -49,11 +49,11 @@ async function runSearch(q) {
   if (!lastResults.length) {
     const digits = q.replace(/\D/g, "");
     const addItem = digits
-      ? `<li id="sugg-add" data-num="${esc(digits)}">➕ Add &amp; download SEDAR #${esc(digits)}</li>`
+      ? `<li id="sugg-add" data-num="${esc(digits)}">➕ Use SEDAR #${esc(digits)} — add exchange &amp; ticker below</li>`
       : `<li class="empty">No local match. Add it by SEDAR number below.</li>`;
     suggestions.innerHTML = addItem;
     const add = document.getElementById("sugg-add");
-    if (add) add.addEventListener("click", () => addByNumber(add.dataset.num));
+    if (add) add.addEventListener("click", () => prefillAdd({ number: add.dataset.num }));
     suggestions.hidden = false;
     return;
   }
@@ -68,41 +68,48 @@ async function runSearch(q) {
   suggestions.hidden = false;
 }
 
-async function selectCompany(c) {
+// Selecting a company prefills the add row (exchange + ticker still required)
+// rather than downloading immediately, since they name the company's R2 folder.
+function selectCompany(c) {
   if (!c) return;
-  hideSuggestions();
-  search.value = "";
-  // Save + queue a full download.
-  try {
-    await api(`/companies/${c.id}/save`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ download: true }),
-    });
-  } catch (e) { alert("Could not queue download: " + e.message); }
-  refreshAll();
+  prefillAdd(c);
 }
 
-async function addByNumber(number, name) {
-  if (!number) return;
+function prefillAdd(c) {
+  hideSuggestions();
+  search.value = "";
+  el("add-number").value = c.number || "";
+  el("add-name").value = c.name || "";
+  el("add-exchange").value = c.exchange || "";
+  el("add-ticker").value = c.ticker || "";
+  (c.exchange ? el("add-ticker") : el("add-exchange")).focus();
+}
+
+async function addByNumber() {
+  const number = el("add-number").value.trim();
+  const name = el("add-name").value.trim();
+  const exchange = el("add-exchange").value.trim();
+  const ticker = el("add-ticker").value.trim();
+  if (!number) { el("add-number").focus(); return; }
+  if (!exchange || !ticker) {
+    alert("Enter an exchange and ticker — together they name the company's R2 folder.");
+    (exchange ? el("add-ticker") : el("add-exchange")).focus();
+    return;
+  }
   try {
     await api(`/companies/add`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ number, name: name || null, download: true }),
+      body: JSON.stringify({ number, name: name || null, exchange, ticker, download: true }),
     });
   } catch (e) { alert("Could not add company: " + e.message); return; }
   hideSuggestions();
   search.value = "";
+  ["add-number", "add-name", "add-exchange", "add-ticker"].forEach((id) => (el(id).value = ""));
   refreshAll();
 }
 
-el("add-btn").addEventListener("click", () => {
-  const num = el("add-number").value.trim();
-  if (!num) { el("add-number").focus(); return; }
-  addByNumber(num, el("add-name").value.trim());
-  el("add-number").value = ""; el("add-name").value = "";
-});
+el("add-btn").addEventListener("click", addByNumber);
 
 // --------------------------------------------------------------------------
 // Saved companies + queue + stats
@@ -127,10 +134,22 @@ async function loadSaved() {
   if (!rows.length) { box.innerHTML = `<div class="empty">No saved companies yet. Search above to add one.</div>`; return; }
   box.innerHTML = rows.map((c) => `
     <div class="card">
-      <div>
+      <div class="card-main">
         <div class="name" data-id="${c.id}" data-name="${esc(c.name)}">${esc(c.name)}</div>
         <div class="sub">${esc(c.type || "")} · ${esc(c.jurisdiction || "")} · #${esc(c.number)}</div>
         <div class="docs">${c.total_documents} document(s) downloaded</div>
+        <div class="slug" data-slug="${c.id}">
+          ${c.folder_slug
+            ? `<span class="slug-tag">${esc(c.folder_slug)}/</span>`
+            : `<span class="slug-warn">⚠ no exchange/ticker set</span>`}
+          <button class="link-btn" data-edit="${c.id}">edit</button>
+        </div>
+        <div class="slug-edit" data-editrow="${c.id}" hidden>
+          <input class="mini" data-ex="${c.id}" placeholder="exchange" value="${esc(c.exchange || "")}" />
+          <input class="mini" data-tk="${c.id}" placeholder="ticker" value="${esc(c.ticker || "")}" />
+          <button class="small" data-savemeta="${c.id}">save</button>
+          <button class="link-btn" data-canceledit="${c.id}">cancel</button>
+        </div>
       </div>
       <button class="ghost small" data-recheck="${c.id}">Check new</button>
     </div>`).join("");
@@ -140,6 +159,29 @@ async function loadSaved() {
     b.addEventListener("click", async () => {
       await api(`/companies/${b.dataset.recheck}/recheck`, { method: "POST" });
       loadQueue();
+    }));
+  const toggleEdit = (id, editing) => {
+    box.querySelector(`[data-slug="${id}"]`).hidden = editing;
+    box.querySelector(`[data-editrow="${id}"]`).hidden = !editing;
+  };
+  box.querySelectorAll("[data-edit]").forEach((b) =>
+    b.addEventListener("click", () => toggleEdit(b.dataset.edit, true)));
+  box.querySelectorAll("[data-canceledit]").forEach((b) =>
+    b.addEventListener("click", () => toggleEdit(b.dataset.canceledit, false)));
+  box.querySelectorAll("[data-savemeta]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const id = b.dataset.savemeta;
+      const exchange = box.querySelector(`[data-ex="${id}"]`).value.trim();
+      const ticker = box.querySelector(`[data-tk="${id}"]`).value.trim();
+      try {
+        // download:false -> just persist exchange/ticker without queueing a job.
+        await api(`/companies/${id}/save`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ download: false, exchange, ticker }),
+        });
+      } catch (e) { alert("Could not save: " + e.message); return; }
+      loadSaved();
     }));
 }
 
@@ -204,7 +246,71 @@ el("btn-recheck").addEventListener("click", async () => {
 });
 
 // --------------------------------------------------------------------------
+// R2 viewer (read-only browse of the object store, rooted at <bucket>/<prefix>)
+// --------------------------------------------------------------------------
+function fmtSize(n) {
+  if (n == null) return "";
+  const u = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0, v = n;
+  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${u[i]}`;
+}
+
+async function loadR2() {
+  let st;
+  try { st = await api("/r2/status"); } catch { return; }
+  if (!st.enabled) {
+    el("r2-status").textContent =
+      "R2 is not configured — set R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY.";
+    el("r2-breadcrumb").innerHTML = "";
+    el("r2-listing").innerHTML = "";
+    return;
+  }
+  el("r2-status").innerHTML =
+    `Bucket <code>${esc(st.bucket)}</code>, rooted at <code>${esc(st.prefix)}</code>.`;
+  r2Navigate("");
+}
+
+async function r2Navigate(path) {
+  let data;
+  try { data = await api(`/r2/list?path=${encodeURIComponent(path)}`); }
+  catch (e) { el("r2-listing").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  renderR2Breadcrumb(data.prefix);
+  const folders = data.folders.map((f) => `
+    <div class="r2-row folder" data-path="${esc(f.path)}">
+      <span class="ic">📁</span><span class="nm">${esc(f.name)}/</span>
+    </div>`).join("");
+  const files = data.files.map((f) => `
+    <div class="r2-row file">
+      <span class="ic">📄</span>
+      <a class="nm" href="/api/r2/object?path=${encodeURIComponent(f.path)}" target="_blank" rel="noopener">${esc(f.name)}</a>
+      <span class="sz">${fmtSize(f.size)}</span>
+      <span class="dt">${esc((f.last_modified || "").slice(0, 19).replace("T", " "))}</span>
+    </div>`).join("");
+  el("r2-listing").innerHTML = (folders + files) || `<div class="empty">Empty folder.</div>`;
+  el("r2-listing").querySelectorAll(".r2-row.folder").forEach((r) =>
+    r.addEventListener("click", () => r2Navigate(r.dataset.path)));
+}
+
+function renderR2Breadcrumb(path) {
+  const parts = path ? path.split("/").filter(Boolean) : [];
+  const crumbs = [`<a data-path="">root</a>`];
+  let acc = "";
+  parts.forEach((p) => {
+    acc += (acc ? "/" : "") + p;
+    crumbs.push(`<span class="sep">/</span><a data-path="${esc(acc)}">${esc(p)}</a>`);
+  });
+  const bc = el("r2-breadcrumb");
+  bc.innerHTML = crumbs.join(" ");
+  bc.querySelectorAll("a").forEach((a) =>
+    a.addEventListener("click", () => r2Navigate(a.dataset.path)));
+}
+
+el("r2-refresh").addEventListener("click", loadR2);
+
+// --------------------------------------------------------------------------
 function refreshAll() { loadStats(); loadSaved(); loadQueue(); }
 refreshAll();
+loadR2();
 setInterval(() => { loadQueue(); loadStats(); }, 3000);
 setInterval(loadSaved, 8000);

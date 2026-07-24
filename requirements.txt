@@ -15,3 +15,6 @@ pydantic>=2.6
 psycopg2-binary>=2.9
 # Optional in-process daily recheck scheduler (ENABLE_INPROCESS_CRON=true)
 apscheduler>=3.10
+# --- Cloudflare R2 (S3-compatible object storage) ---
+# Scraped batch zips are uploaded here; the web app also browses/serves them.
+boto3>=1.34

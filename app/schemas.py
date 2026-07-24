@@ -15,6 +15,9 @@ class CompanyOut(BaseModel):
     name: str
     jurisdiction: str | None = None
     type: str | None = None
+    exchange: str | None = None
+    ticker: str | None = None
+    folder_slug: str | None = None
     saved: bool
     profile_url: str | None = None
     total_documents: int = 0
@@ -61,6 +64,9 @@ class EnumerateRequest(BaseModel):
 class SaveRequest(BaseModel):
     # If true, queue a full download immediately after saving.
     download: bool = True
+    # Exchange + ticker name the company's R2 folder (<exchange>-<ticker>).
+    exchange: str | None = None
+    ticker: str | None = None
 
 
 class AddCompanyRequest(BaseModel):
@@ -68,4 +74,7 @@ class AddCompanyRequest(BaseModel):
     # the "Profile name or number" lookup, so a company need not be enumerated.
     number: str
     name: str | None = None
+    # Exchange + ticker name the company's R2 folder (<exchange>-<ticker>).
+    exchange: str | None = None
+    ticker: str | None = None
     download: bool = True

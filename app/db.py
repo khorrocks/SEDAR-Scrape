@@ -7,7 +7,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Iterator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import settings
@@ -28,6 +28,31 @@ def init_db() -> None:
     from . import models  # noqa: F401
 
     Base.metadata.create_all(engine)
+    _migrate()
+
+
+# Columns added after the first release. create_all() never ALTERs existing
+# tables, so we add any missing ones here. Kept tiny/idempotent on purpose --
+# ADD COLUMN (nullable, no default) is safe on both SQLite and Postgres.
+_ADDED_COLUMNS = {
+    "companies": {
+        "exchange": "VARCHAR(16)",
+        "ticker": "VARCHAR(32)",
+    },
+}
+
+
+def _migrate() -> None:
+    insp = inspect(engine)
+    existing_tables = set(insp.get_table_names())
+    for table, columns in _ADDED_COLUMNS.items():
+        if table not in existing_tables:
+            continue
+        have = {c["name"] for c in insp.get_columns(table)}
+        with engine.begin() as conn:
+            for name, ddl in columns.items():
+                if name not in have:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
 
 
 @contextmanager

@@ -29,6 +29,7 @@ from sedar import documents as docs
 from sedar import lookup, profiles
 from sedar.browser import BrowserConfig, build_driver
 
+from . import r2
 from .config import settings
 from .models import Company, Document
 
@@ -103,8 +104,26 @@ def download_company(
         )
     }
 
-    company_dir = settings.download_dir / (company.number or f"company_{company.id}")
-    company_dir.mkdir(parents=True, exist_ok=True)
+    # R2 is the source of truth when configured; batch zips are uploaded to
+    # <prefix>/<slug>/raw-data/ and the local copy deleted. Falls back to local
+    # disk when no R2 credentials are set.
+    use_r2 = settings.r2_enabled
+    slug = company.folder_slug
+    if use_r2 and not slug:
+        raise RuntimeError(
+            f"set an exchange and ticker for {company.name} (#{company.number}) "
+            "before downloading — together they name its R2 folder"
+        )
+
+    # Mirror the R2 layout on local disk: <slug>/raw-data/. Prefer the slug and
+    # fall back to the issuer number only when exchange/ticker aren't set.
+    company_dir = (
+        settings.download_dir
+        / (slug or company.number or f"company_{company.id}")
+        / "raw-data"
+    )
+    if not use_r2:
+        company_dir.mkdir(parents=True, exist_ok=True)
 
     batches = 0
     new_docs = 0
@@ -122,20 +141,26 @@ def download_company(
         zip_rel = None
         if page_new:
             ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            before = {p.name for p in settings.download_dir.iterdir()}
             fname = docs.download_current_page(
                 driver, settings.download_dir, timeout=settings.download_timeout_seconds
             )
             if fname:
                 src = settings.download_dir / fname
-                dest = company_dir / f"{ts}_batch{page:04d}.zip"
-                # Move the just-downloaded zip out of the shared dir into the
-                # company's folder so concurrent before/after sets stay clean.
+                dest_name = f"{ts}_batch{page:04d}.zip"
                 if src.exists():
-                    shutil.move(str(src), str(dest))
-                    zip_rel = str(dest.relative_to(settings.data_dir))
-            else:
-                _ = before  # download timed out; leave zip_rel None
+                    if use_r2:
+                        # Upload to R2, then delete the local copy so the volume
+                        # stays small. batch_zip stores the R2 object key.
+                        key = r2.raw_data_key(slug, dest_name)
+                        r2.upload_file(src, key)
+                        src.unlink()
+                        zip_rel = key
+                    else:
+                        # Local fallback: move out of the shared dir into the
+                        # company's folder; batch_zip stores a data_dir-relative path.
+                        dest = company_dir / dest_name
+                        shutil.move(str(src), str(dest))
+                        zip_rel = str(dest.relative_to(settings.data_dir))
 
             for r, k in zip(rows, page_keys):
                 if k in known:
