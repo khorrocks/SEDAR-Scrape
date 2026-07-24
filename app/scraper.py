@@ -200,28 +200,61 @@ def download_company(
     return {"batches": batches, "new_documents": new_docs, "total_reported": total}
 
 
+_FF_SETTLE = 3.0  # pause between pages while fast-forwarding (no scraping)
+
+
+def _advance_or_raise_if_blocked(driver, settle: float) -> bool:
+    """Click 'Next'. Return True if we advanced, False at the genuine end of the
+    list. If we couldn't advance because of a Radware/captcha page (not the end),
+    raise so the worker's recovery pauses for a manual solve instead of silently
+    treating a mid-walk block as 'done'."""
+    if profiles.next_page(driver, settle=settle):
+        return True
+    if docs.is_blocked(driver):
+        raise RuntimeError("Radware block during enumeration — solve the captcha to continue")
+    return False
+
+
 def enumerate_catalog(db: Session, driver, profile_type: str | None = "Company",
                       max_pages: int | None = None, progress: ProgressFn | None = None,
-                      should_yield: Callable[[], bool] | None = None) -> dict:
+                      should_yield: Callable[[], bool] | None = None,
+                      start_page: int = 0) -> dict:
     """Populate/refresh the companies catalog used by autocomplete.
 
     Pages through the Reporting issuers list and upserts each page immediately
     (checkpointing), so a long run survives an interruption. Upserts are
     idempotent (keyed on issuer number), so re-runs accumulate the full list.
 
-    ``should_yield`` is polled after each page's checkpoint; if it returns True
-    (a higher-priority download/recheck is waiting), the enumerate stops early
-    and returns ``{"yielded": True}`` so the caller can requeue it to resume once
-    the queue drains. Returns ``{"seen": <int>, "yielded": <bool>}``.
+    ``start_page`` resumes a paused/interrupted run: the list only has a 'Next'
+    button (no page jump), so we *fast-forward* to that page by paging without
+    scraping, then resume scraping. Safe by construction -- if an advance lags we
+    land earlier and re-scrape (idempotent), never past unscraped pages.
+
+    ``should_yield`` is polled after each page; if it returns True (a waiting
+    download, or a manual pause) the enumerate stops early and returns
+    ``{"yielded": True}``. Returns ``{"seen": <int>, "yielded": <bool>}``.
     """
     profiles.open_reporting_issuers(driver)
     col = profiles._column_index(driver)
     total = profiles.total_count(driver)
 
     seen: set[str] = set()
-    page = 0
+    page = 1  # open_reporting_issuers leaves us on page 1
+
+    # Resume: fast-forward (no scraping) to the checkpoint page.
+    if start_page and start_page > page:
+        while page < start_page:
+            if should_yield and should_yield():
+                return {"seen": len(seen), "yielded": True}
+            if not _advance_or_raise_if_blocked(driver, _FF_SETTLE):
+                break  # genuine end of list before the resume point
+            page += 1
+            if progress:
+                # Keep batches_done pinned at the resume target so a crash during
+                # fast-forward still resumes there (not the fast-forward position).
+                progress(start_page, 0, total or 0, f"resuming: fast-forwarding {page}/{start_page}")
+
     while True:
-        page += 1
         for r in profiles.scrape_page(driver, col):
             if profile_type and profile_type.lower() not in (r.get("type") or "").lower():
                 continue
@@ -248,10 +281,11 @@ def enumerate_catalog(db: Session, driver, profile_type: str | None = "Company",
             progress(page, len(seen), total or 0, f"page {page}: {len(seen)} issuers")
         if max_pages and page >= max_pages:
             break
-        # Pause point: step aside for a waiting download/recheck, then resume
-        # later (the caller requeues us). Checkpoint above means nothing is lost.
+        # Pause point: step aside for a waiting download/recheck or a manual
+        # pause. Checkpoint above means nothing is lost.
         if should_yield and should_yield():
             return {"seen": len(seen), "yielded": True}
-        if not profiles.next_page(driver, settle=4.0):  # light list: short settle
+        if not _advance_or_raise_if_blocked(driver, 4.0):
             break
+        page += 1
     return {"seen": len(seen), "yielded": False}

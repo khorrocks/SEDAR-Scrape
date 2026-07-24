@@ -61,11 +61,14 @@ def enqueue_recheck(db: Session, company: Company, max_batches: int | None = Non
 
 
 def enqueue_enumerate(db: Session, profile_type: str = "Company",
-                      max_pages: int | None = None) -> Job:
+                      max_pages: int | None = None, start_page: int = 0) -> Job:
+    # ``start_page`` seeds batches_done so the worker fast-forwards to it (resume
+    # a paused/interrupted enumerate instead of re-walking from the top).
     job = Job(
         kind=KIND_ENUMERATE,
         status=JOB_QUEUED,
         params=json.dumps({"profile_type": profile_type, "max_pages": max_pages}),
+        batches_done=start_page or 0,
     )
     db.add(job)
     db.commit()

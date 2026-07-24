@@ -314,6 +314,9 @@ def _run_job(job_id: int, holder: _DriverHolder) -> None:
                         q.has_pending_company_job(db)
                         or q.is_pause_requested(db, job.id)
                     ),
+                    # Resume from the last checkpointed page (fast-forward). Read
+                    # fresh so a retry after a crash resumes from latest progress.
+                    start_page=(job.batches_done or 0),
                 ),
                 count_fn=lambda: _company_count(db),
             )
@@ -329,12 +332,13 @@ def _run_job(job_id: int, holder: _DriverHolder) -> None:
                         "the catalog controls"
                     )
                 else:
-                    # Auto-yield for a waiting download; requeue to resume once the
-                    # queue drains (a fresh enumerate re-walks idempotently from top).
+                    # Auto-yield for a waiting download; requeue to resume from the
+                    # page we stopped on (fast-forward) once the queue drains.
                     q.enqueue_enumerate(
                         db,
                         profile_type=params.get("profile_type"),
                         max_pages=params.get("max_pages"),
+                        start_page=(job.batches_done or 0),
                     )
                     job.message = (
                         f"paused for pending downloads at {_company_count(db)} companies; "

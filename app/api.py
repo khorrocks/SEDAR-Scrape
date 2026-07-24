@@ -87,12 +87,16 @@ def enumerate_catalog(req: EnumerateRequest, db: Session = Depends(get_db)):
     )
     if existing:
         return _job_out(existing)
-    # Resuming supersedes any manually-paused enumerate (a fresh run re-walks
-    # from the top idempotently), so retire paused ones to keep the queue clean.
+    # Resuming picks up from a manually-paused enumerate's checkpoint page (the
+    # worker fast-forwards to it); retire the paused record to keep the queue tidy.
+    resume_page = 0
     for p in db.scalars(select(Job).where(Job.kind == KIND_ENUMERATE, Job.status == JOB_PAUSED)):
+        resume_page = max(resume_page, p.batches_done or 0)
         p.status = JOB_DONE
         p.message = "resumed"
-    job = q.enqueue_enumerate(db, profile_type=req.profile_type, max_pages=req.max_pages)
+    job = q.enqueue_enumerate(
+        db, profile_type=req.profile_type, max_pages=req.max_pages, start_page=resume_page
+    )
     return _job_out(job)
 
 
