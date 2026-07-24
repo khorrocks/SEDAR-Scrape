@@ -33,6 +33,7 @@ main { max-width: 1100px; margin: 0 auto; padding: 24px 28px; }
    string (e.g. a Radware block URL in an error) can't force the page wider. */
 .columns > * { min-width: 0; }
 @media (max-width: 820px) { .columns { grid-template-columns: 1fr; } }
+.header-right { display: flex; align-items: center; gap: 16px; }
 .stats { display: flex; gap: 18px; font-size: 13px; color: var(--muted); }
 .stats b { color: var(--text); }
 .hint { color: var(--muted); font-size: 13px; margin: 6px 0 0; }

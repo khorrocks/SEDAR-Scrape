@@ -202,6 +202,9 @@ from the DB — R2 is left untouched; the request must send a matching `X-Admin-
 CAPTCHA/live view: `MANUAL_CAPTCHA` (default `true` — pause blocked jobs for a human
 to solve via noVNC), `CAPTCHA_WAIT_SECONDS` (default `600`), `VNC_PASSWORD` (protect
 the live browser view — **set this on any public deploy**).
+Login gate: `AUTH_USERNAME` + `AUTH_PASSWORD` — when both are set, the whole site
+(UI, API, and live view) requires signing in; a session cookie keeps you logged in.
+Leave unset to disable the gate (e.g. local dev). Kept in env, not source.
 For R2 storage: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
 `R2_BUCKET` (default `smallcap-kb`), `R2_PREFIX` (default `kb/`) — see
 [Cloudflare R2 storage](#cloudflare-r2-storage).

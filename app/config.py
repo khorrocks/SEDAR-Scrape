@@ -58,6 +58,13 @@ class Settings:
     # Unset => those endpoints are disabled (return 403).
     admin_token: str | None = os.getenv("ADMIN_TOKEN") or None
 
+    # --- Simple login gate (single hardcoded user, supplied via env) ---
+    # When both are set, the whole site (UI + API + live view) requires signing
+    # in; a session cookie keeps you logged in. Unset => no gate (e.g. local dev).
+    # Kept in env (not source) so the password isn't committed to the repo.
+    auth_username: str | None = os.getenv("AUTH_USERNAME") or None
+    auth_password: str | None = os.getenv("AUTH_PASSWORD") or None
+
     # --- Manual CAPTCHA solving (noVNC live browser view) ---
     # When True, a Radware/captcha block pauses the job (keeping the SAME
     # browser) and waits for a human to solve it via the live noVNC view,
@@ -92,6 +99,10 @@ class Settings:
     @property
     def download_dir(self) -> Path:
         return self.data_dir / "downloads"
+
+    @property
+    def auth_enabled(self) -> bool:
+        return bool(self.auth_username and self.auth_password)
 
     @property
     def r2_enabled(self) -> bool:

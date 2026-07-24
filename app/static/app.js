@@ -1,6 +1,7 @@
 "use strict";
 
 const api = (path, opts) => fetch("/api" + path, opts).then(async (r) => {
+  if (r.status === 401) { location.href = "/login"; throw new Error("unauthorized"); }
   if (!r.ok) throw new Error((await r.text()) || r.statusText);
   return r.status === 204 ? null : r.json();
 });
@@ -390,6 +391,20 @@ function renderR2Breadcrumb(path) {
 }
 
 el("r2-refresh").addEventListener("click", loadR2);
+
+// --------------------------------------------------------------------------
+// Auth (login gate): show Sign out when enabled; log out clears the session.
+el("logout-btn").addEventListener("click", async () => {
+  try { await fetch("/api/logout", { method: "POST" }); } catch {}
+  location.href = "/login";
+});
+(async () => {
+  try {
+    const s = await api("/auth/status");
+    el("logout-btn").hidden = !s.enabled;
+    if (s.enabled && s.user) el("logout-btn").title = "Signed in as " + s.user;
+  } catch {}
+})();
 
 // --------------------------------------------------------------------------
 function refreshAll() { loadStats(); loadSaved(); loadQueue(); }
