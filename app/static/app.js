@@ -198,7 +198,11 @@ async function loadQueue() {
   const vEnc = location.protocol === "https:" ? "1" : "0";
   const vncUrl = `/novnc/vnc.html?host=${vHost}&port=${vPort}&encrypt=${vEnc}&path=novnc/websockify&autoconnect=true&resize=remote`;
   box.innerHTML = jobs.map((j) => {
-    const pct = j.total_documents ? Math.min(100, Math.round(100 * j.documents_done / j.total_documents)) : (j.status === "done" ? 100 : 0);
+    // A finished job shows a full bar (a capped/test download is "done" even
+    // though documents_done < total_documents); otherwise show real progress.
+    const pct = (j.status === "done")
+      ? 100
+      : (j.total_documents ? Math.min(100, Math.round(100 * j.documents_done / j.total_documents)) : 0);
     const label = j.company_name || (j.kind === "enumerate_catalog" ? "Catalog enumeration" : "job #" + j.id);
     const cancel = j.status === "queued" ? `<button class="ghost small" data-cancel="${j.id}">cancel</button>` : "";
     const statusLabel = j.blocked ? "blocked" : j.status;
