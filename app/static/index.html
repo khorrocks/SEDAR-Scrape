@@ -50,7 +50,10 @@
       </section>
 
       <section class="panel">
-        <h2>Download queue</h2>
+        <div class="queue-head">
+          <h2>Download queue</h2>
+          <button id="clear-queue-btn" class="ghost small" hidden>Clear finished</button>
+        </div>
         <p class="hint">One company finishes (in batches of 30) before the next starts.</p>
         <div id="queue" class="queue"></div>
       </section>

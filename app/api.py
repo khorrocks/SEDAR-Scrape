@@ -14,6 +14,7 @@ from . import r2
 from .config import settings
 from .db import get_db
 from .models import (
+    JOB_CANCELLED,
     JOB_DONE,
     JOB_FAILED,
     JOB_PAUSED,
@@ -233,6 +234,17 @@ def list_queue(
         reverse=True,
     )
     return [_job_out(j) for j in active + finished]
+
+
+@router.post("/queue/clear")
+def clear_finished(db: Session = Depends(get_db)):
+    """Delete finished jobs (done/failed/cancelled) from the queue history so the
+    view stays tidy. Queued, running, and paused jobs are kept."""
+    result = db.execute(
+        delete(Job).where(Job.status.in_([JOB_DONE, JOB_FAILED, JOB_CANCELLED]))
+    )
+    db.commit()
+    return {"cleared": result.rowcount}
 
 
 @router.delete("/jobs/{job_id}", response_model=JobOut)
