@@ -115,6 +115,27 @@ async function addByNumber() {
 
 el("add-btn").addEventListener("click", addByNumber);
 
+el("enumerate-btn").addEventListener("click", async () => {
+  if (!confirm("Build/refresh the full company catalog? This is a long browser job that pages through every issuer. It may pause for a CAPTCHA — solve it in the live view and it keeps going.")) return;
+  try {
+    await api("/catalog/enumerate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile_type: "Company" }),
+    });
+  } catch (e) { alert("Could not queue enumeration: " + e.message); return; }
+  loadQueue();
+});
+
+// Reflect an in-flight enumerate on the button so it can't be double-queued.
+function updateEnumerateControls(jobs) {
+  const en = jobs.find((j) => j.kind === "enumerate_catalog" && (j.status === "queued" || j.status === "running"));
+  el("enumerate-btn").disabled = !!en;
+  el("enumerate-hint").textContent = en
+    ? (en.status === "running" ? "running — " + clip(en.message || "…", 60) : "queued…")
+    : "";
+}
+
 // --------------------------------------------------------------------------
 // Saved companies + queue + stats
 // --------------------------------------------------------------------------
@@ -192,6 +213,7 @@ async function loadSaved() {
 async function loadQueue() {
   let jobs = [];
   try { jobs = await api("/queue?include_finished=true&limit=40"); } catch {}
+  updateEnumerateControls(jobs);
   const box = el("queue");
   if (!jobs.length) { box.innerHTML = `<div class="empty">Queue is empty.</div>`; return; }
   // Pin host/port/encrypt explicitly — noVNC's own guess picks the wrong port

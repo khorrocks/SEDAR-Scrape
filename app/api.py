@@ -18,6 +18,7 @@ from .models import (
     JOB_FAILED,
     JOB_QUEUED,
     JOB_RUNNING,
+    KIND_ENUMERATE,
     Company,
     Document,
     Job,
@@ -75,7 +76,15 @@ def catalog_stats(db: Session = Depends(get_db)):
 
 @router.post("/catalog/enumerate", response_model=JobOut)
 def enumerate_catalog(req: EnumerateRequest, db: Session = Depends(get_db)):
-    """Queue a (browser) job that populates the autocomplete catalog."""
+    """Queue a (browser) job that populates the autocomplete catalog. If one is
+    already queued or running, return it rather than stacking another full run."""
+    existing = db.scalar(
+        select(Job).where(
+            Job.kind == KIND_ENUMERATE, Job.status.in_([JOB_QUEUED, JOB_RUNNING])
+        )
+    )
+    if existing:
+        return _job_out(existing)
     job = q.enqueue_enumerate(db, profile_type=req.profile_type, max_pages=req.max_pages)
     return _job_out(job)
 
