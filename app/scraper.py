@@ -201,13 +201,18 @@ def download_company(
 
 
 def enumerate_catalog(db: Session, driver, profile_type: str | None = "Company",
-                      max_pages: int | None = None, progress: ProgressFn | None = None) -> int:
+                      max_pages: int | None = None, progress: ProgressFn | None = None,
+                      should_yield: Callable[[], bool] | None = None) -> dict:
     """Populate/refresh the companies catalog used by autocomplete.
 
     Pages through the Reporting issuers list and upserts each page immediately
-    (checkpointing), so a long run survives an interruption. Returns the number
-    of catalog rows touched. Resuming re-walks from the top, but upserts are
+    (checkpointing), so a long run survives an interruption. Upserts are
     idempotent (keyed on issuer number), so re-runs accumulate the full list.
+
+    ``should_yield`` is polled after each page's checkpoint; if it returns True
+    (a higher-priority download/recheck is waiting), the enumerate stops early
+    and returns ``{"yielded": True}`` so the caller can requeue it to resume once
+    the queue drains. Returns ``{"seen": <int>, "yielded": <bool>}``.
     """
     profiles.open_reporting_issuers(driver)
     col = profiles._column_index(driver)
@@ -243,6 +248,10 @@ def enumerate_catalog(db: Session, driver, profile_type: str | None = "Company",
             progress(page, len(seen), total or 0, f"page {page}: {len(seen)} issuers")
         if max_pages and page >= max_pages:
             break
+        # Pause point: step aside for a waiting download/recheck, then resume
+        # later (the caller requeues us). Checkpoint above means nothing is lost.
+        if should_yield and should_yield():
+            return {"seen": len(seen), "yielded": True}
         if not profiles.next_page(driver, settle=4.0):  # light list: short settle
             break
-    return len(seen)
+    return {"seen": len(seen), "yielded": False}

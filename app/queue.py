@@ -1,13 +1,14 @@
 """Queue helpers. The queue is just the ``jobs`` table; a single worker claims
-the oldest queued job and runs it to completion, so ordering == FIFO and only
-one company downloads at a time."""
+the next queued job and runs it to completion. Company work (download/recheck)
+is claimed ahead of the long background ``enumerate``; within a priority it's
+FIFO, so companies still download one at a time in order."""
 
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.orm import Session
 
 from .models import (
@@ -71,10 +72,32 @@ def enqueue_enumerate(db: Session, profile_type: str = "Company",
     return job
 
 
+def has_pending_company_job(db: Session) -> bool:
+    """True if a download/recheck job is waiting in the queue. A long-running
+    enumerate calls this between pages so it can pause (checkpoint + requeue
+    itself) and let the higher-priority company work run first."""
+    return db.scalar(
+        select(Job.id)
+        .where(Job.status == JOB_QUEUED, Job.kind.in_([KIND_DOWNLOAD, KIND_RECHECK]))
+        .limit(1)
+    ) is not None
+
+
 def claim_next_job(db: Session) -> Job | None:
-    """Atomically take the oldest queued job and mark it running."""
+    """Atomically take the next queued job and mark it running.
+
+    Ordering: company work (download/recheck/probe) is claimed ahead of the
+    long-running catalog ``enumerate`` so an in-progress enumerate can't block a
+    user's download -- it simply resumes (idempotently) once downloads drain.
+    Within the same priority it's FIFO by creation time, so downloads still run
+    one company at a time in order.
+    """
+    enumerate_last = case((Job.kind == KIND_ENUMERATE, 1), else_=0)
     job = db.scalar(
-        select(Job).where(Job.status == JOB_QUEUED).order_by(Job.created_at.asc()).limit(1)
+        select(Job)
+        .where(Job.status == JOB_QUEUED)
+        .order_by(enumerate_last.asc(), Job.created_at.asc())
+        .limit(1)
     )
     if not job:
         return None

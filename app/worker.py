@@ -246,17 +246,34 @@ def _run_job(job_id: int, holder: _DriverHolder) -> None:
 
         if job.kind == KIND_ENUMERATE:
             params = json.loads(job.params or "{}")
-            n = _with_recovery(
+            result = _with_recovery(
                 db, job, holder,
                 lambda d: scraper.enumerate_catalog(
                     db, d,
                     profile_type=params.get("profile_type"),
                     max_pages=params.get("max_pages"),
                     progress=progress,
+                    should_yield=lambda: q.has_pending_company_job(db),
                 ),
                 count_fn=lambda: _company_count(db),
             )
-            job.message = f"catalog now holds {_company_count(db)} companies ({n} seen this pass)"
+            if result.get("yielded"):
+                # Paused for a waiting download; requeue so it resumes once the
+                # queue drains (a fresh enumerate re-walks idempotently from top).
+                q.enqueue_enumerate(
+                    db,
+                    profile_type=params.get("profile_type"),
+                    max_pages=params.get("max_pages"),
+                )
+                job.message = (
+                    f"paused for pending downloads at {_company_count(db)} companies; "
+                    "queued a job to resume enumeration"
+                )
+            else:
+                job.message = (
+                    f"catalog now holds {_company_count(db)} companies "
+                    f"({result['seen']} seen this pass)"
+                )
             db.commit()
             return
 
