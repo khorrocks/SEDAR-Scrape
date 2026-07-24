@@ -12,8 +12,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     DATA_DIR=/data
 
 # Chrome + Xvfb + the libs headed Chrome needs on a slim base.
+# x11vnc + fluxbox + novnc power the live "solve the CAPTCHA" browser view.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       wget gnupg ca-certificates xvfb xauth \
+      x11vnc fluxbox novnc \
       fonts-liberation libnss3 libxss1 libasound2 libatk-bridge2.0-0 \
       libgtk-3-0 libgbm1 libu2f-udev xdg-utils \
  && wget -q -O /tmp/chrome.deb \

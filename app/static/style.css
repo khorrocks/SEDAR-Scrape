@@ -113,6 +113,13 @@ button.small { padding: 5px 9px; font-size: 12px; }
 .status.done { background: var(--accent-2); color: #06230f; }
 .status.failed { background: var(--err); color: #2a0000; }
 .status.cancelled { background: var(--border); color: var(--muted); }
+.status.blocked { background: var(--err); color: #2a0000; }
+.job.is-blocked { border-color: var(--err); box-shadow: 0 0 0 1px var(--err) inset; }
+.solve-btn {
+  display: inline-block; margin-top: 8px; padding: 8px 12px; border-radius: 8px;
+  background: var(--err); color: #fff; text-decoration: none; font-size: 13px; font-weight: 600;
+}
+.solve-btn:hover { filter: brightness(1.1); }
 .job .msg { color: var(--muted); font-size: 12px; margin-top: 5px; }
 .bar { height: 5px; background: var(--border); border-radius: 999px; margin-top: 8px; overflow: hidden; }
 .bar > span { display: block; height: 100%; background: var(--accent); width: 0; transition: width .4s; }

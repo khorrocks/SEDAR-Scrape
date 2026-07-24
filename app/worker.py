@@ -23,6 +23,8 @@ from .config import settings
 from .db import init_db, session_scope
 from sqlalchemy import func, select
 
+from sedar import documents as sedar_docs
+
 from .models import (
     KIND_DOWNLOAD,
     KIND_ENUMERATE,
@@ -44,6 +46,49 @@ def _company_count(db) -> int:
     return db.scalar(select(func.count(Company.id))) or 0
 
 
+def _driver_is_blocked(holder) -> bool:
+    """True if the current browser is sitting on a Radware/captcha page."""
+    d = holder._driver
+    if d is None:
+        return False
+    try:
+        return sedar_docs.is_blocked(d)
+    except Exception:
+        return False
+
+
+def _await_manual_solve(db, job, holder) -> bool:
+    """Pause on a captcha and wait for a human to solve it in the live browser
+    view. Crucially we DON'T rebuild the browser (that would discard the session
+    the human just cleared); we poll the same driver until it leaves the block
+    page, then let the caller retry. Returns True if solved, False on timeout."""
+    d = holder._driver
+    if d is None:
+        return False
+    job.blocked = True
+    job.message = ("CAPTCHA detected — open the live browser view and solve it "
+                   "to continue")
+    db.commit()
+    print(f"[worker] job {job.id} paused for manual CAPTCHA solve "
+          f"(up to {int(settings.captcha_wait_seconds)}s)", flush=True)
+    deadline = time.time() + settings.captcha_wait_seconds
+    while _RUNNING and time.time() < deadline:
+        time.sleep(3)
+        try:
+            still_blocked = sedar_docs.is_blocked(d)
+        except Exception:
+            break  # browser died; abandon the manual path
+        if not still_blocked:
+            job.blocked = False
+            job.message = "CAPTCHA solved — resuming"
+            db.commit()
+            print(f"[worker] job {job.id} CAPTCHA solved; resuming", flush=True)
+            return True
+    job.blocked = False
+    db.commit()
+    return False
+
+
 def _with_recovery(db, job, holder, do_work, count_fn):
     """Run do_work(driver) with self-healing retries: rebuild the browser on
     failure (frees memory / clears popup state) and resume. A Radware/perfdrive
@@ -62,7 +107,18 @@ def _with_recovery(db, job, holder, do_work, count_fn):
         except Exception as exc:
             progressed = count_fn() > before
             err = "".join(_tb.format_exception_only(type(exc), exc)).strip()
-            blocked = "perfdrive" in err.lower() or "radware" in err.lower()
+            blocked = (
+                "perfdrive" in err.lower()
+                or "radware" in err.lower()
+                or _driver_is_blocked(holder)
+            )
+            # Manual solve: if a human clears the captcha in the live view, retry
+            # on the SAME browser (don't reset — that discards the cleared
+            # session) without counting the pause against the attempt cap.
+            if blocked and settings.manual_captcha and holder._driver is not None:
+                if _await_manual_solve(db, job, holder):
+                    attempts -= 1
+                    continue
             if progressed:
                 stalls = 0
             elif not blocked:

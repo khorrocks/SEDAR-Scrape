@@ -109,6 +109,10 @@ class Job(Base):
     # Free-form params for non-company jobs (e.g. enumerate type).
     params: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # True while the job is paused on a Radware/captcha block waiting for a
+    # human to solve it in the live browser view (status stays 'running').
+    blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # Progress, surfaced in the queue view.
     batches_done: Mapped[int] = mapped_column(Integer, default=0)
     documents_done: Mapped[int] = mapped_column(Integer, default=0)

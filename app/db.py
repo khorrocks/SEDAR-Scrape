@@ -39,6 +39,9 @@ _ADDED_COLUMNS = {
         "exchange": "VARCHAR(16)",
         "ticker": "VARCHAR(32)",
     },
+    "jobs": {
+        "blocked": "BOOLEAN DEFAULT 0",
+    },
 }
 
 

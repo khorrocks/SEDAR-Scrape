@@ -111,6 +111,7 @@ def claim_next_job(db: Session) -> Job | None:
 def finish_job(db: Session, job: Job, *, ok: bool, error: str | None = None) -> None:
     job.status = JOB_DONE if ok else JOB_FAILED
     job.error = error
+    job.blocked = False
     job.finished_at = datetime.now(timezone.utc)
     db.commit()
 
@@ -122,5 +123,6 @@ def requeue_stuck_jobs(db: Session) -> int:
     for j in stuck:
         j.status = JOB_QUEUED
         j.started_at = None
+        j.blocked = False
     db.commit()
     return len(stuck)

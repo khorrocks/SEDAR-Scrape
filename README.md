@@ -110,6 +110,26 @@ R2 env vars: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`
 `R2_PREFIX` (default `kb/`), `R2_ENDPOINT` (optional override),
 `R2_URL_EXPIRY_SECONDS` (presigned link lifetime, default 3600).
 
+### Solving a CAPTCHA in the live browser (noVNC)
+
+SEDAR+ is behind Radware bot detection; under sustained scraping the server IP can
+get flagged and served a **CAPTCHA page**. The container runs the worker's real
+Chrome on a shared Xvfb display that is also exposed over **VNC/noVNC**, so you can
+solve the challenge by hand:
+
+- When the worker hits a block and `MANUAL_CAPTCHA=true` (default), the job **pauses
+  on the same browser** (it does *not* rebuild it, which would throw away the
+  cleared session) and shows as **`blocked`** in the queue with a **"Solve CAPTCHA in
+  live browser view"** button.
+- The button opens noVNC (`/novnc/vnc.html`) — a live view of the actual Chrome. Solve
+  the CAPTCHA there; the worker detects the page has cleared and **resumes** where it
+  left off. If nobody solves it within `CAPTCHA_WAIT_SECONDS` (default 600), it falls
+  back to the normal backoff/self-heal.
+- **Protect it:** set `VNC_PASSWORD` on any public deployment — noVNC prompts for it.
+  x11vnc listens on localhost only; the sole way in is the app's proxied websocket.
+- This helps when Radware serves a *solvable* CAPTCHA. A hard IP block (no CAPTCHA,
+  "request unblock") only clears with a **cool-down or a residential proxy**.
+
 ### Architecture
 
 ```
@@ -179,6 +199,9 @@ Test/ops: `MAX_BATCHES` (cap every download to N 30-doc batches — set `1` to t
 without pulling a company's full history; a per-request `max_batches` overrides it),
 `ADMIN_TOKEN` (enables `POST /api/admin/reset`, which wipes jobs/companies/documents
 from the DB — R2 is left untouched; the request must send a matching `X-Admin-Token`).
+CAPTCHA/live view: `MANUAL_CAPTCHA` (default `true` — pause blocked jobs for a human
+to solve via noVNC), `CAPTCHA_WAIT_SECONDS` (default `600`), `VNC_PASSWORD` (protect
+the live browser view — **set this on any public deploy**).
 For R2 storage: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`,
 `R2_BUCKET` (default `smallcap-kb`), `R2_PREFIX` (default `kb/`) — see
 [Cloudflare R2 storage](#cloudflare-r2-storage).

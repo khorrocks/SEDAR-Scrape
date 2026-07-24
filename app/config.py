@@ -58,6 +58,15 @@ class Settings:
     # Unset => those endpoints are disabled (return 403).
     admin_token: str | None = os.getenv("ADMIN_TOKEN") or None
 
+    # --- Manual CAPTCHA solving (noVNC live browser view) ---
+    # When True, a Radware/captcha block pauses the job (keeping the SAME
+    # browser) and waits for a human to solve it via the live noVNC view,
+    # instead of failing. Falls back to auto-backoff if nobody solves in time.
+    manual_captcha: bool = _bool("MANUAL_CAPTCHA", True)
+    # How long to wait for a human to solve a captcha before giving up and
+    # letting the normal recovery/backoff take over.
+    captcha_wait_seconds: float = float(os.getenv("CAPTCHA_WAIT_SECONDS", "600"))
+
     # --- Cloudflare R2 (S3-compatible object storage) ---
     # Scraped batch zips land in R2 under <prefix>/<exchange>-<ticker>/raw-data/.
     # Leave the credentials unset to keep everything on local disk instead.

@@ -191,16 +191,23 @@ async function loadQueue() {
   try { jobs = await api("/queue?include_finished=true&limit=40"); } catch {}
   const box = el("queue");
   if (!jobs.length) { box.innerHTML = `<div class="empty">Queue is empty.</div>`; return; }
+  const vncUrl = "/novnc/vnc.html?path=novnc/websockify&autoconnect=true&resize=remote";
   box.innerHTML = jobs.map((j) => {
     const pct = j.total_documents ? Math.min(100, Math.round(100 * j.documents_done / j.total_documents)) : (j.status === "done" ? 100 : 0);
     const label = j.company_name || (j.kind === "enumerate_catalog" ? "Catalog enumeration" : "job #" + j.id);
     const cancel = j.status === "queued" ? `<button class="ghost small" data-cancel="${j.id}">cancel</button>` : "";
-    return `<div class="job">
+    const statusLabel = j.blocked ? "blocked" : j.status;
+    const statusCls = j.blocked ? "blocked" : j.status;
+    const solve = j.blocked
+      ? `<a class="solve-btn" href="${vncUrl}" target="_blank" rel="noopener">🔓 Solve CAPTCHA in live browser view</a>`
+      : "";
+    return `<div class="job${j.blocked ? " is-blocked" : ""}">
       <div class="row">
         <span class="title">${esc(label)}</span>
-        <span>${cancel} <span class="status ${j.status}">${j.status}</span></span>
+        <span>${cancel} <span class="status ${statusCls}">${statusLabel}</span></span>
       </div>
       ${j.message ? `<div class="msg">${esc(j.message)}</div>` : ""}
+      ${solve}
       ${j.error ? `<div class="msg" style="color:var(--err)">${esc(j.error)}</div>` : ""}
       <div class="bar"><span style="width:${pct}%"></span></div>
     </div>`;
