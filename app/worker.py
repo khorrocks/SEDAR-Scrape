@@ -137,6 +137,9 @@ def _with_recovery(db, job, holder, do_work, count_fn):
             print(f"[worker] job {job.id} {kind_msg} (attempt {attempts}, "
                   f"progressed={progressed}): {err}", flush=True)
             job.message = f"{kind_msg} (attempt {attempts})…"
+            # Keep the latest failure text queryable while recovering (not just on
+            # a hard failure), so a repeating stall can be diagnosed via the API.
+            job.error = err[:2000]
             db.commit()
             holder.reset()
             time.sleep(wait)
