@@ -37,6 +37,12 @@ ProgressFn = Callable[[int, int, int, str], None]
 """(batches_done, documents_done, total_documents, message) -> None"""
 
 
+class ProactiveRebuild(Exception):
+    """Raised by a long download to ask the worker to rebuild the browser (free
+    memory) and resume from the current page -- a planned memory reset, not a
+    failure. The worker's recovery loop handles it without counting a retry."""
+
+
 def make_driver(download_dir: Path):
     cfg = BrowserConfig(
         download_dir=download_dir,
@@ -210,6 +216,12 @@ def download_company(
 
         if max_batches and batches >= max_batches:
             break
+        # Planned memory reset: after N downloaded batches, rebuild the browser
+        # (via the recovery loop) and resume from this page (fast-forward). The
+        # batch just downloaded is committed, so nothing is lost.
+        if (settings.download_rebuild_every_batches
+                and batches >= settings.download_rebuild_every_batches):
+            raise ProactiveRebuild()
         time.sleep(settings.batch_pause_seconds)
         if not _advance_or_raise_if_blocked(driver, settle=8.0):
             break

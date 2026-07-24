@@ -52,6 +52,11 @@ class Settings:
     # Global "test mode": cap every download to this many 30-doc batches. Unset
     # (None) means download everything. A per-request max_batches overrides this.
     default_max_batches: int | None = _int("MAX_BATCHES", None)
+    # Proactively rebuild the browser after this many downloaded batches to bound
+    # Chrome's memory on long downloads (the worker resumes from the same page via
+    # fast-forward). Prevents the container OOM-killing the worker mid-download.
+    # 0 disables.
+    download_rebuild_every_batches: int = int(os.getenv("DOWNLOAD_REBUILD_EVERY", "5"))
 
     # --- Watchdog ---
     # If a job makes no progress for this long, the worker hard-exits so the

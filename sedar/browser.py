@@ -92,6 +92,21 @@ def build_driver(cfg: BrowserConfig) -> uc.Chrome:
         options.page_load_strategy = cfg.page_load_strategy
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    # Memory-lean flags: multi-batch downloads otherwise creep Chrome's RAM until
+    # a small container OOM-kills the worker. These trim baseline usage without
+    # affecting the (verified) download flow or stealth.
+    for _flag in (
+        "--disable-gpu",
+        "--disable-extensions",
+        "--disable-application-cache",
+        "--disk-cache-size=1",
+        "--disable-background-networking",
+        "--disable-default-apps",
+        "--disable-sync",
+        "--disable-translate",
+        "--mute-audio",
+    ):
+        options.add_argument(_flag)
     options.add_argument(f"--window-size={cfg.window_size[0]},{cfg.window_size[1]}")
     # SEDAR+ triggers the document download via a window.open() popup; with the
     # popup blocker on, the green "Download" button silently does nothing.

@@ -108,6 +108,17 @@ def _with_recovery(db, job, holder, do_work, count_fn):
         before = count_fn()
         try:
             return do_work(holder.get())
+        except scraper.ProactiveRebuild:
+            # Planned memory reset: rebuild the browser and resume from the same
+            # page (fast-forward), without counting against the retry/stall limits.
+            print(f"[worker] job {job.id} planned browser rebuild to free memory", flush=True)
+            job.message = "rebuilding browser to free memory; resuming…"
+            db.commit()
+            holder.reset()
+            attempts -= 1
+            _beat()
+            time.sleep(2)
+            continue
         except Exception as exc:
             progressed = count_fn() > before
             err = "".join(_tb.format_exception_only(type(exc), exc)).strip()
