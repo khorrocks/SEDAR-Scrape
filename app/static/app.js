@@ -191,7 +191,12 @@ async function loadQueue() {
   try { jobs = await api("/queue?include_finished=true&limit=40"); } catch {}
   const box = el("queue");
   if (!jobs.length) { box.innerHTML = `<div class="empty">Queue is empty.</div>`; return; }
-  const vncUrl = "/novnc/vnc.html?path=novnc/websockify&autoconnect=true&resize=remote";
+  // Pin host/port/encrypt explicitly — noVNC's own guess picks the wrong port
+  // on 443 and fails to connect. Computed from the page so it works on any host.
+  const vHost = location.hostname;
+  const vPort = location.port || (location.protocol === "https:" ? "443" : "80");
+  const vEnc = location.protocol === "https:" ? "1" : "0";
+  const vncUrl = `/novnc/vnc.html?host=${vHost}&port=${vPort}&encrypt=${vEnc}&path=novnc/websockify&autoconnect=true&resize=remote`;
   box.innerHTML = jobs.map((j) => {
     const pct = j.total_documents ? Math.min(100, Math.round(100 * j.documents_done / j.total_documents)) : (j.status === "done" ? 100 : 0);
     const label = j.company_name || (j.kind === "enumerate_catalog" ? "Catalog enumeration" : "job #" + j.id);
