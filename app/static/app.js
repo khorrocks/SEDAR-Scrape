@@ -8,6 +8,9 @@ const api = (path, opts) => fetch("/api" + path, opts).then(async (r) => {
 const el = (id) => document.getElementById(id);
 const esc = (s) => (s == null ? "" : String(s)).replace(/[&<>"]/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+// Cap long status/error text so a huge unbroken string (e.g. a Radware block
+// URL) can't blow out the queue layout.
+const clip = (s, n = 280) => { s = String(s == null ? "" : s); return s.length > n ? s.slice(0, n) + "…" : s; };
 
 // --------------------------------------------------------------------------
 // Autocomplete
@@ -215,9 +218,9 @@ async function loadQueue() {
         <span class="title">${esc(label)}</span>
         <span>${cancel} <span class="status ${statusCls}">${statusLabel}</span></span>
       </div>
-      ${j.message ? `<div class="msg">${esc(j.message)}</div>` : ""}
+      ${j.message ? `<div class="msg">${esc(clip(j.message))}</div>` : ""}
       ${solve}
-      ${j.error ? `<div class="msg" style="color:var(--err)">${esc(j.error)}</div>` : ""}
+      ${j.error ? `<div class="msg" style="color:var(--err)" title="${esc(j.error)}">${esc(clip(j.error))}</div>` : ""}
       <div class="bar"><span style="width:${pct}%"></span></div>
     </div>`;
   }).join("");
