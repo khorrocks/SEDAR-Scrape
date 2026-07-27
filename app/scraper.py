@@ -159,6 +159,9 @@ def download_company(
 
     while True:
         page += 1
+        # Collapse any leftover download/pagination popups to a single window
+        # first; a stray window otherwise wedges the next WebDriver command.
+        docs.ensure_single_window(driver)
         rows = docs.list_page_rows(driver)
         page_keys = [_dedup_key(r) for r in rows]
         page_new = [r for r, k in zip(rows, page_keys) if k not in known]

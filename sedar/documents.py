@@ -199,6 +199,38 @@ def _close_popups(driver, main_handle: str) -> None:
             pass
 
 
+def ensure_single_window(driver) -> None:
+    """Collapse to a single browser window, focused on the primary one.
+
+    The document download fires a window.open() popup; if one lingers (or a
+    pagination click spawns one), the driver can end up operating on the wrong
+    window and later WebDriver commands hang indefinitely (no clean timeout).
+    Closing strays and re-focusing the first handle before each page's work
+    keeps the driver on the real results window."""
+    try:
+        handles = driver.window_handles
+    except Exception:
+        return
+    if len(handles) <= 1:
+        # Still make sure focus is valid.
+        try:
+            driver.switch_to.window(handles[0])
+        except Exception:
+            pass
+        return
+    keep = handles[0]
+    for h in handles[1:]:
+        try:
+            driver.switch_to.window(h)
+            driver.close()
+        except Exception:
+            pass
+    try:
+        driver.switch_to.window(keep)
+    except Exception:
+        pass
+
+
 def download_current_page(
     driver, download_dir: Path, timeout: float = 180.0
 ) -> str | None:

@@ -90,6 +90,11 @@ def build_driver(cfg: BrowserConfig) -> uc.Chrome:
     options = uc.ChromeOptions()
     if cfg.page_load_strategy:
         options.page_load_strategy = cfg.page_load_strategy
+    # Auto-accept JS dialogs (e.g. a "Leave site? / Changes may not be saved"
+    # beforeunload prompt when paginating away from a page mid-download). Such a
+    # dialog otherwise BLOCKS every WebDriver command with no clean timeout,
+    # freezing the worker silently. "accept" proceeds (so pagination isn't stuck).
+    options.set_capability("unhandledPromptBehavior", "accept")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     # Memory-lean flags: trim Chrome's baseline RAM on a small container. Kept to
