@@ -92,15 +92,15 @@ def build_driver(cfg: BrowserConfig) -> uc.Chrome:
         options.page_load_strategy = cfg.page_load_strategy
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    # Memory-lean flags: multi-batch downloads otherwise creep Chrome's RAM until
-    # a small container OOM-kills the worker. These trim baseline usage without
-    # affecting the (verified) download flow or stealth.
+    # Memory-lean flags: trim Chrome's baseline RAM on a small container. Kept to
+    # a SAFE subset only -- earlier we also set --disable-background-networking and
+    # cache-disabling flags, which broke the document zip download ("produced no
+    # file"). Memory is bounded instead by the proactive browser rebuild
+    # (DOWNLOAD_REBUILD_EVERY). Do NOT add network/cache/download-affecting flags
+    # here; the download fires via a window.open() popup and is easily broken.
     for _flag in (
         "--disable-gpu",
         "--disable-extensions",
-        "--disable-application-cache",
-        "--disk-cache-size=1",
-        "--disable-background-networking",
         "--disable-default-apps",
         "--disable-sync",
         "--disable-translate",
