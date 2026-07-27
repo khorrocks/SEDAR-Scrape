@@ -284,6 +284,27 @@ def retry_failed(db: Session = Depends(get_db)):
     return {"requeued": requeued}
 
 
+@router.post("/companies/{company_id}/reset")
+def reset_company_documents(
+    company_id: int,
+    x_admin_token: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """Clear a company's indexed documents so the next download re-pulls every
+    page from scratch. Use after a bad run indexed rows against a wrong/partial
+    zip. Does not touch R2 objects. Admin-gated."""
+    if not settings.admin_token:
+        raise HTTPException(403, "reset is disabled (set ADMIN_TOKEN to enable)")
+    if x_admin_token != settings.admin_token:
+        raise HTTPException(401, "invalid admin token")
+    company = _get_company(db, company_id)
+    n = db.execute(delete(Document).where(Document.company_id == company_id)).rowcount
+    company.total_documents = 0
+    company.last_download_at = None
+    db.commit()
+    return {"company": company.name, "documents_deleted": n}
+
+
 @router.post("/jobs/{job_id}/force-fail", response_model=JobOut)
 def force_fail_job(
     job_id: int,

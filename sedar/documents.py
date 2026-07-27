@@ -284,6 +284,25 @@ def ensure_single_window(driver) -> None:
         pass
 
 
+# Pick the download MODAL's confirm button, never a per-row Actions "Download"
+# link. Marks the winner with data-sedar-confirm so Selenium clicks that exact
+# element, and reports what it saw so the choice is visible in the logs.
+_CONFIRM_JS = r"""
+const vis = el => !!(el.offsetParent || el.getClientRects().length);
+const cands = [...document.querySelectorAll('button,a')]
+  .filter(e => (e.textContent || '').trim() === 'Download' && vis(e));
+document.querySelectorAll('[data-sedar-confirm]')
+  .forEach(e => e.removeAttribute('data-sedar-confirm'));
+if (!cands.length) return null;
+const dlg = e => e.closest('[role=dialog],[aria-modal=true],dialog,.modal,.modal-content,.ui-dialog');
+const tbl = e => e.closest('table');
+const pick = cands.find(e => dlg(e)) || cands.find(e => !tbl(e)) || null;
+if (!pick) return null;
+pick.setAttribute('data-sedar-confirm', '1');
+return {candidates: cands.length, in_dialog: !!dlg(pick), in_table: !!tbl(pick), tag: pick.tagName};
+"""
+
+
 def download_current_page(
     driver, download_dir: Path, timeout: float = 180.0
 ) -> str | None:
@@ -315,20 +334,25 @@ def download_current_page(
         raise RuntimeError(
             f"no 'Download documents' button (url={driver.current_url})"
         )
-    # The modal's confirmation button is labelled exactly "Download" (the blue
-    # opener is "Download documents", so an exact match excludes it). The modal
-    # can be slow to render, so poll for it and re-click the opener. Per-element
-    # try/except: the modal re-renders as it appears, so is_displayed()/text on a
-    # candidate can raise StaleElementReferenceException mid-scan -- skip those.
     def _find_confirm():
-        out = []
-        for b in driver.find_elements(By.XPATH, "//button|//a"):
-            try:
-                if b.is_displayed() and b.text.strip() == "Download":
-                    out.append(b)
-            except StaleElementReferenceException:
-                continue
-        return out
+        """Locate the MODAL's confirm button and return (element, info) or (None, None).
+
+        Must not match the per-row "Download" links in the results table's Actions
+        column: those appear BEFORE the modal in document order, so taking the
+        first match downloaded a single filing (a ~91KB file instead of a ~5MB
+        30-doc batch) or opened a viewer and produced no file at all -- which is
+        what stalled the whole download. We therefore prefer a candidate inside a
+        dialog/modal container, then any candidate outside a <table>, and mark the
+        winner with a data attribute so Selenium clicks exactly that element.
+        """
+        info = driver.execute_script(_CONFIRM_JS)
+        if not info:
+            return None, None
+        try:
+            el = driver.find_element(By.CSS_SELECTOR, "[data-sedar-confirm='1']")
+        except Exception:
+            return None, None
+        return el, info
 
     # Open the modal with a NATIVE click. A scripted element.click() does not
     # count as the trusted user gesture SEDAR+/Chrome want here: the browser
@@ -337,7 +361,7 @@ def download_current_page(
     # (confirmed live: a real manual click works, a scripted one doesn't). Use
     # ActionChains (like the confirm button) and re-find the trigger each try so
     # a stale ref after a re-render can't wedge it. Try a few times.
-    confirm = []
+    confirm, cinfo = None, None
     for attempt in range(4):
         trig = _find_trigger()
         if trig is None:
@@ -350,25 +374,35 @@ def download_current_page(
             _click(driver, trig)  # fallback to scripted if native click can't run
         deadline = time.time() + 12
         while time.time() < deadline:
-            confirm = _find_confirm()
-            if confirm:
+            confirm, cinfo = _find_confirm()
+            if confirm is not None:
                 break
             if is_blocked(driver):
                 raise RuntimeError("Radware re-challenge when opening download modal")
             time.sleep(1)
-        if confirm:
+        if confirm is not None:
             break
-    if not confirm:
+    if confirm is None:
         raise RuntimeError(
             f"download confirmation modal did not appear (url={driver.current_url})"
+        )
+    # Refuse to click a row-level Actions "Download" link: that fetches a single
+    # filing (or opens a viewer and downloads nothing) instead of the batch zip.
+    if cinfo and cinfo.get("in_table") and not cinfo.get("in_dialog"):
+        raise RuntimeError(
+            "download modal not found; only per-row Download links are present "
+            f"(candidates={cinfo.get('candidates')})"
         )
     # Native click (ActionChains) -- a scripted .click() doesn't always count as
     # the trusted user gesture Chrome wants before starting a download. Re-find
     # the confirm button immediately before clicking so a re-render between the
     # poll and the click can't hand us a stale element.
-    _log("clicking modal 'Download', waiting for zip")
-    fresh = _find_confirm()
-    target = fresh[0] if fresh else confirm[0]
+    _log(
+        f"clicking modal 'Download' (candidates={cinfo.get('candidates')}, "
+        f"in_dialog={cinfo.get('in_dialog')}, tag={cinfo.get('tag')}), waiting for zip"
+    )
+    fresh, finfo = _find_confirm()
+    target = fresh if fresh is not None else confirm
     ActionChains(driver).move_to_element(target).pause(0.3).click(target).perform()
 
     fname = _wait_for_download(download_dir, before, timeout)
@@ -378,5 +412,9 @@ def download_current_page(
             f"download produced no file within {timeout:.0f}s "
             f"(url={driver.current_url}, title={driver.title!r})"
         )
-    _log(f"downloaded {fname}")
+    try:
+        _size = (download_dir / fname).stat().st_size
+        _log(f"downloaded {fname} ({_size:,} bytes)")
+    except Exception:
+        _log(f"downloaded {fname}")
     return fname
