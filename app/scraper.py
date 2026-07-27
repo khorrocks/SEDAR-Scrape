@@ -307,8 +307,13 @@ def download_company(
             # disabled BOTH and let a short run finish as a success.
             reported = total or (company.reported_total or 0)
 
-        if only_new and not page_new:
+        if only_new and not page_new and page > start_page:
             # Newest-first: a page with nothing new means we've caught up.
+            # Only past the resume point though -- after a browser rebuild the
+            # run fast-forwards back onto a page it already downloaded, which
+            # legitimately has nothing new. Treating that as "caught up" ended
+            # every recheck at its first rebuild (seen live: a recheck stopped at
+            # 150 of 675 documents, exactly DOWNLOAD_REBUILD_EVERY x 30).
             break
 
         if page_new:
