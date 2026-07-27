@@ -73,15 +73,47 @@ class BrowserConfig:
     extra_args: list[str] = field(default_factory=list)
 
 
+def _force_command_timeout(driver, seconds: int) -> None:
+    """Bound the HTTP read timeout on the *live* chromedriver connection.
+
+    ``RemoteConnection.set_timeout()`` is a legacy class-level API that modern
+    Selenium (4.2x+) ignores -- the timeout now lives on the connection's
+    ClientConfig / urllib3 pool. Without this, only ``execute_script`` is bounded
+    (by chromedriver's 30s script timeout); ``find_elements`` and ``.text`` have
+    NO timeout and block FOREVER on a wedged page, so the worker freezes with no
+    exception and no traceback. We set it every way the supported versions expose.
+    """
+    ex = getattr(driver, "command_executor", None)
+    if ex is None:
+        return
+    cc = getattr(ex, "_client_config", None)  # Selenium 4.2x+
+    if cc is not None:
+        try:
+            cc.timeout = seconds
+        except Exception:
+            pass
+    try:  # older instance-level API
+        ex.set_timeout(seconds)
+    except Exception:
+        pass
+    conn = getattr(ex, "_conn", None)  # urllib3 PoolManager doing the request
+    if conn is not None:
+        try:
+            import urllib3
+
+            conn.connection_pool_kw["timeout"] = urllib3.Timeout(
+                connect=seconds, read=seconds
+            )
+        except Exception:
+            pass
+
+
 def build_driver(cfg: BrowserConfig) -> uc.Chrome:
     """Construct a configured undetected-chromedriver Chrome instance."""
     cfg.download_dir.mkdir(parents=True, exist_ok=True)
 
-    # CRITICAL: bound the HTTP client read timeout to chromedriver *before* the
-    # driver is built. Without this, a wedged Chrome (which happens after a few
-    # big-zip downloads) makes a WebDriver command hang FOREVER, so the worker's
-    # retry/self-heal never gets its exception. set_timeout is a classmethod on
-    # RemoteConnection, so it applies to uc's ChromeRemoteConnection too.
+    # Legacy class-level timeout: harmless, and still honoured by old Selenium.
+    # The authoritative one is _force_command_timeout() on the built driver below.
     try:
         RemoteConnection.set_timeout(cfg.command_timeout)
     except Exception:
@@ -161,6 +193,10 @@ def build_driver(cfg: BrowserConfig) -> uc.Chrome:
         browser_executable_path=cfg.chrome_binary,
         version_main=version_main,
     )
+
+    # Enforce the read timeout on the live connection so a wedged page raises
+    # instead of hanging the worker forever (see _force_command_timeout).
+    _force_command_timeout(driver, cfg.command_timeout)
 
     # Make sure CDP allows downloads to our directory (covers headed Chrome
     # which can otherwise ignore the prefs download path). Browser.* is

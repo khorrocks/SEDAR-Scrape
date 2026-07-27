@@ -58,10 +58,16 @@ def run_search(driver, settle: float = 9.0) -> None:
 
 
 def result_count(driver) -> str:
-    """Return the 'Displaying 1-30 of N results' line, or '' if absent."""
+    """Return the 'Displaying 1-30 of N results' line, or '' if absent.
+
+    Reads innerText via execute_script (bounded by the script timeout) rather
+    than element ``.text``, which has no timeout and can hang the worker.
+    """
     import re
 
-    body = driver.find_element(By.TAG_NAME, "body").text
+    body = driver.execute_script(
+        "return (document.body && document.body.innerText) || '';"
+    ) or ""
     m = re.search(r"Displaying[^\n]+results", body)
     return m.group(0) if m else ""
 
@@ -88,45 +94,64 @@ def _results_table(driver):
     return None, {}
 
 
+# Extract the whole results table in ONE call. Columns are mapped by header
+# text, so a leading checkbox / trailing Actions column can't misalign them.
+_ROWS_JS = r"""
+const tables = [...document.querySelectorAll('table')];
+for (const t of tables) {
+  const ths = [...t.querySelectorAll('th')].map(th => (th.textContent||'').trim().toLowerCase());
+  if (!ths.some(h => h.includes('document')) || !ths.some(h => h.includes('submitted'))) continue;
+  const idx = {};
+  ths.forEach((h, i) => {
+    if (h.startsWith('profile')) idx.profile = i;
+    else if (h.startsWith('document')) idx.document = i;
+    else if (h.includes('submitted')) idx.submitted = i;
+    else if (h.includes('principal jurisdiction')) idx.jurisdiction = i;
+    else if (h.includes('file size')) idx.file_size = i;
+  });
+  if (idx.document === undefined) continue;
+  const out = [];
+  for (const tr of t.querySelectorAll('tbody tr')) {
+    const tds = tr.querySelectorAll('td');
+    const cell = k => (idx[k] !== undefined && tds[idx[k]])
+      ? ((tds[idx[k]].innerText || '').trim()) : '';
+    const doc = cell('document');
+    if (!doc) continue;
+    out.push({profile: cell('profile'), document: doc, submitted: cell('submitted'),
+              jurisdiction: cell('jurisdiction'), file_size: cell('file_size')});
+  }
+  return out;
+}
+return [];
+"""
+
+
 def list_page_rows(driver) -> list[dict]:
-    """Scrape the documents results table into row dicts, mapping columns by
-    header so a leading checkbox / trailing Actions column can't misalign.
+    """Scrape the documents results table into row dicts.
 
-    Retries locally on a StaleElementReferenceException: the results table
-    re-renders (SEDAR+ hydrates it after load / on paginate), and a stale ref
-    mid-scrape would otherwise bubble up and get treated as a hard failure,
-    stalling the whole download. We re-locate the table and rescan instead.
+    Done as a SINGLE ``execute_script`` on purpose. The previous element-by-element
+    version issued hundreds of ``find_elements``/``.text`` round trips per page --
+    and those commands have no timeout, so one wedged call froze the worker
+    forever with no exception. ``execute_script`` is bounded by chromedriver's
+    script timeout, so a bad page raises (and the worker's recovery resumes)
+    instead of hanging. It is also far faster and immune to stale-element races,
+    since the DOM is read in one shot inside the page.
     """
-    from selenium.common.exceptions import StaleElementReferenceException
-
-    for _ in range(4):
-        table, idx = _results_table(driver)
-        if not table or "document" not in idx:
-            return []
-        out = []
-        try:
-            for r in table.find_elements(By.XPATH, ".//tbody//tr"):
-                cells = r.find_elements(By.TAG_NAME, "td")
-
-                def cell(key: str, cells=cells) -> str:
-                    i = idx.get(key)
-                    return cells[i].text.strip() if i is not None and i < len(cells) else ""
-
-                doc = cell("document")
-                if not doc:
-                    continue
-                out.append(
-                    {
-                        "profile": cell("profile"),
-                        "document": doc,
-                        "submitted": cell("submitted"),
-                        "jurisdiction": cell("jurisdiction"),
-                        "file_size": cell("file_size"),
-                    }
-                )
-            return out
-        except StaleElementReferenceException:
-            time.sleep(1)
+    rows = driver.execute_script(_ROWS_JS) or []
+    out = []
+    for r in rows:
+        doc = (r.get("document") or "").strip()
+        if not doc:
+            continue
+        out.append(
+            {
+                "profile": (r.get("profile") or "").strip(),
+                "document": doc,
+                "submitted": (r.get("submitted") or "").strip(),
+                "jurisdiction": (r.get("jurisdiction") or "").strip(),
+                "file_size": (r.get("file_size") or "").strip(),
+            }
+        )
     return out
 
 
