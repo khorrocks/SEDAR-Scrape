@@ -159,6 +159,8 @@ def download_company(
 
     while True:
         page += 1
+        if progress:  # instrumentation: pinpoint a hang at the sub-step
+            progress(page, new_docs, total, f"[scraping page {page}]")
         # Collapse any leftover download/pagination popups to a single window
         # first; a stray window otherwise wedges the next WebDriver command.
         docs.ensure_single_window(driver)
@@ -226,6 +228,9 @@ def download_company(
                 and batches >= settings.download_rebuild_every_batches):
             raise ProactiveRebuild()
         time.sleep(settings.batch_pause_seconds)
+        if progress:  # instrumentation: pinpoint a hang in the page advance
+            progress(page, new_docs, total, f"[advancing from page {page}]")
+        docs.ensure_single_window(driver)  # close popups before paginating
         if not _advance_or_raise_if_blocked(driver, settle=8.0):
             break
 
