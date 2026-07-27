@@ -89,30 +89,43 @@ def _results_table(driver):
 
 def list_page_rows(driver) -> list[dict]:
     """Scrape the documents results table into row dicts, mapping columns by
-    header so a leading checkbox / trailing Actions column can't misalign."""
-    table, idx = _results_table(driver)
-    if not table or "document" not in idx:
-        return []
-    out = []
-    for r in table.find_elements(By.XPATH, ".//tbody//tr"):
-        cells = r.find_elements(By.TAG_NAME, "td")
+    header so a leading checkbox / trailing Actions column can't misalign.
 
-        def cell(key: str) -> str:
-            i = idx.get(key)
-            return cells[i].text.strip() if i is not None and i < len(cells) else ""
+    Retries locally on a StaleElementReferenceException: the results table
+    re-renders (SEDAR+ hydrates it after load / on paginate), and a stale ref
+    mid-scrape would otherwise bubble up and get treated as a hard failure,
+    stalling the whole download. We re-locate the table and rescan instead.
+    """
+    from selenium.common.exceptions import StaleElementReferenceException
 
-        doc = cell("document")
-        if not doc:
-            continue
-        out.append(
-            {
-                "profile": cell("profile"),
-                "document": doc,
-                "submitted": cell("submitted"),
-                "jurisdiction": cell("jurisdiction"),
-                "file_size": cell("file_size"),
-            }
-        )
+    for _ in range(4):
+        table, idx = _results_table(driver)
+        if not table or "document" not in idx:
+            return []
+        out = []
+        try:
+            for r in table.find_elements(By.XPATH, ".//tbody//tr"):
+                cells = r.find_elements(By.TAG_NAME, "td")
+
+                def cell(key: str, cells=cells) -> str:
+                    i = idx.get(key)
+                    return cells[i].text.strip() if i is not None and i < len(cells) else ""
+
+                doc = cell("document")
+                if not doc:
+                    continue
+                out.append(
+                    {
+                        "profile": cell("profile"),
+                        "document": doc,
+                        "submitted": cell("submitted"),
+                        "jurisdiction": cell("jurisdiction"),
+                        "file_size": cell("file_size"),
+                    }
+                )
+            return out
+        except StaleElementReferenceException:
+            time.sleep(1)
     return out
 
 

@@ -19,6 +19,7 @@ from .models import (
     JOB_RUNNING,
     KIND_DOWNLOAD,
     KIND_ENUMERATE,
+    KIND_PROBE,
     KIND_RECHECK,
     Company,
     Job,
@@ -95,17 +96,21 @@ def is_pause_requested(db: Session, job_id: int) -> bool:
 def claim_next_job(db: Session) -> Job | None:
     """Atomically take the next queued job and mark it running.
 
-    Ordering: company work (download/recheck/probe) is claimed ahead of the
-    long-running catalog ``enumerate`` so an in-progress enumerate can't block a
-    user's download -- it simply resumes (idempotently) once downloads drain.
-    Within the same priority it's FIFO by creation time, so downloads still run
-    one company at a time in order.
+    Ordering by priority: debug ``probe`` first (a diagnostic should not sit
+    behind a stuck download), then company work (download/recheck), then the
+    long-running catalog ``enumerate`` last so it can't block a user's download
+    (it resumes idempotently once downloads drain). Within a priority it's FIFO
+    by creation time, so downloads still run one company at a time in order.
     """
-    enumerate_last = case((Job.kind == KIND_ENUMERATE, 1), else_=0)
+    priority = case(
+        (Job.kind == KIND_PROBE, 0),
+        (Job.kind == KIND_ENUMERATE, 2),
+        else_=1,
+    )
     job = db.scalar(
         select(Job)
         .where(Job.status == JOB_QUEUED)
-        .order_by(enumerate_last.asc(), Job.created_at.asc())
+        .order_by(priority.asc(), Job.created_at.asc())
         .limit(1)
     )
     if not job:
