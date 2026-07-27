@@ -161,8 +161,10 @@ def download_company(
         page += 1
         if progress:  # instrumentation: pinpoint a hang at the sub-step
             progress(page, new_docs, total, f"[scraping page {page}]")
-        # Collapse any leftover download/pagination popups to a single window
-        # first; a stray window otherwise wedges the next WebDriver command.
+        # Clear any blocking JS dialog (a beforeunload prompt otherwise freezes
+        # every execute_script with a 'script timeout'), then collapse leftover
+        # popups to a single window before scraping.
+        docs.neutralize_dialogs(driver)
         docs.ensure_single_window(driver)
         rows = docs.list_page_rows(driver)
         page_keys = [_dedup_key(r) for r in rows]
@@ -230,6 +232,7 @@ def download_company(
         time.sleep(settings.batch_pause_seconds)
         if progress:  # instrumentation: pinpoint a hang in the page advance
             progress(page, new_docs, total, f"[advancing from page {page}]")
+        docs.neutralize_dialogs(driver)  # clear any beforeunload prompt
         docs.ensure_single_window(driver)  # close popups before paginating
         if not _advance_or_raise_if_blocked(driver, settle=8.0):
             break

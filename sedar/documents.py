@@ -200,6 +200,33 @@ def _close_popups(driver, main_handle: str) -> None:
             pass
 
 
+def neutralize_dialogs(driver) -> None:
+    """Clear anything that blocks JavaScript execution.
+
+    SEDAR+ raises a ``beforeunload`` ("Leave site? Changes may not be saved")
+    dialog when navigating/paginating. A blocking JS dialog freezes every
+    ``execute_script`` call -> Selenium raises ``TimeoutException: script
+    timeout`` and the scrape stalls (undetected-chromedriver doesn't honour the
+    ``unhandledPromptBehavior`` capability, so it isn't auto-dismissed). We:
+      1. accept any dialog already up (the alert API is NOT blocked by it), then
+      2. null future beforeunload/unload handlers so navigation can't re-trigger
+         a blocking prompt.
+    """
+    for _ in range(3):
+        try:
+            driver.switch_to.alert.accept()
+        except Exception:
+            break
+    try:
+        driver.execute_script(
+            "try{window.onbeforeunload=null;window.onunload=null;"
+            "window.addEventListener('beforeunload',"
+            "function(e){e.stopImmediatePropagation();},true);}catch(e){}"
+        )
+    except Exception:
+        pass
+
+
 def ensure_single_window(driver) -> None:
     """Collapse to a single browser window, focused on the primary one.
 
