@@ -14,6 +14,7 @@ so everything goes through the browser; there is no clean JSON API to call.
 
 from __future__ import annotations
 
+import shutil
 import time
 from pathlib import Path
 
@@ -252,6 +253,42 @@ def neutralize_dialogs(driver) -> None:
         pass
 
 
+def purge_stale_downloads(download_dir: Path) -> None:
+    """Delete leftover files sitting directly in the download dir and report free
+    space.
+
+    Completed batches are moved/uploaded out of this directory, so anything left
+    at the top level is debris from a failed or aborted download (including
+    ``.crdownload`` partials). That debris accumulates on the mounted volume, and
+    a FULL volume makes Chrome abort downloads *silently* -- the modal closes and
+    no file ever lands, which is indistinguishable from a hang. Sweeping first
+    keeps the volume healthy and logs the free space so a real disk problem is
+    visible instead of looking like a stall.
+    """
+    try:
+        removed = 0
+        for p in download_dir.iterdir():
+            if p.is_file():
+                try:
+                    p.unlink()
+                    removed += 1
+                except Exception:
+                    pass
+        usage = shutil.disk_usage(download_dir)
+        free_mb = usage.free // (1024 * 1024)
+        if removed or free_mb < 200:
+            _log(f"download dir: purged {removed} stale file(s), {free_mb} MB free")
+        if free_mb < 25:
+            raise RuntimeError(
+                f"only {free_mb} MB free on the data volume -- Chrome will fail "
+                "downloads silently; free space or enlarge the volume"
+            )
+    except RuntimeError:
+        raise
+    except Exception:
+        pass
+
+
 def ensure_single_window(driver) -> None:
     """Collapse to a single browser window, focused on the primary one.
 
@@ -284,22 +321,40 @@ def ensure_single_window(driver) -> None:
         pass
 
 
-# Pick the download MODAL's confirm button, never a per-row Actions "Download"
-# link. Marks the winner with data-sedar-confirm so Selenium clicks that exact
-# element, and reports what it saw so the choice is visible in the logs.
+# Pick the download MODAL's confirm button. Verified against the live DOM:
+#   DIV.ui-dialog > DIV.appDialogPopup > DIV.appDialogPopupChildren
+#     > DIV.appBox...-buttons > BUTTON.appButton...-buttons-ok.appOk   ("Download")
+# (sibling is "Cancel"). So the reliable anchor is `.appOk` inside `.ui-dialog` /
+# `.appDialogPopup`; we fall back to a text match only if the markup changes.
+# Visibility is checked strictly -- a laid-out-but-hidden dialog still returns
+# client rects, which would otherwise let us "click" an invisible button.
 _CONFIRM_JS = r"""
-const vis = el => !!(el.offsetParent || el.getClientRects().length);
-const cands = [...document.querySelectorAll('button,a')]
-  .filter(e => (e.textContent || '').trim() === 'Download' && vis(e));
+const vis = el => {
+  const r = el.getBoundingClientRect(), cs = getComputedStyle(el);
+  return r.width > 0 && r.height > 0 && !!el.offsetParent &&
+         cs.visibility !== 'hidden' && cs.display !== 'none' && cs.opacity !== '0';
+};
 document.querySelectorAll('[data-sedar-confirm]')
   .forEach(e => e.removeAttribute('data-sedar-confirm'));
-if (!cands.length) return null;
-const dlg = e => e.closest('[role=dialog],[aria-modal=true],dialog,.modal,.modal-content,.ui-dialog');
-const tbl = e => e.closest('table');
-const pick = cands.find(e => dlg(e)) || cands.find(e => !tbl(e)) || null;
+const dlgSel = '.ui-dialog,.appDialogPopup,[role=dialog],[aria-modal=true]';
+const openDlg = [...document.querySelectorAll(dlgSel)].filter(vis);
+let pick = null, how = '';
+for (const d of openDlg) {           // preferred: the dialog's OK button
+  const b = [...d.querySelectorAll('button.appOk,button')]
+    .find(e => vis(e) && (e.classList.contains('appOk') ||
+                          (e.textContent || '').trim() === 'Download'));
+  if (b) { pick = b; how = 'dialog-ok'; break; }
+}
+if (!pick) {                          // fallback: exact-text button anywhere visible
+  pick = [...document.querySelectorAll('button,a')]
+    .find(e => (e.textContent || '').trim() === 'Download' && vis(e)) || null;
+  how = pick ? 'text-fallback' : '';
+}
 if (!pick) return null;
 pick.setAttribute('data-sedar-confirm', '1');
-return {candidates: cands.length, in_dialog: !!dlg(pick), in_table: !!tbl(pick), tag: pick.tagName};
+return {how: how, dialogs_open: openDlg.length,
+        in_dialog: !!pick.closest(dlgSel), tag: pick.tagName,
+        cls: (pick.className || '').toString().slice(0, 60)};
 """
 
 
@@ -322,6 +377,10 @@ def download_current_page(
         raise RuntimeError("could not find the 'All documents listed on this page' checkbox")
     time.sleep(2)
 
+    # Clear debris from earlier failed downloads first: it fills the volume, and
+    # a full volume makes Chrome drop downloads silently.
+    if download_dir.exists():
+        purge_stale_downloads(download_dir)
     before = set(p.name for p in download_dir.iterdir()) if download_dir.exists() else set()
 
     def _find_trigger():
@@ -372,7 +431,10 @@ def download_current_page(
             ActionChains(driver).move_to_element(trig).pause(0.2).click(trig).perform()
         except Exception:
             _click(driver, trig)  # fallback to scripted if native click can't run
-        deadline = time.time() + 12
+        # The modal is SLOW: measured live it was absent at 4s and present by
+        # ~12s, so a 12s budget sat right on the edge and intermittently missed
+        # it. Give it 30s per attempt.
+        deadline = time.time() + 30
         while time.time() < deadline:
             confirm, cinfo = _find_confirm()
             if confirm is not None:
@@ -386,20 +448,13 @@ def download_current_page(
         raise RuntimeError(
             f"download confirmation modal did not appear (url={driver.current_url})"
         )
-    # Refuse to click a row-level Actions "Download" link: that fetches a single
-    # filing (or opens a viewer and downloads nothing) instead of the batch zip.
-    if cinfo and cinfo.get("in_table") and not cinfo.get("in_dialog"):
-        raise RuntimeError(
-            "download modal not found; only per-row Download links are present "
-            f"(candidates={cinfo.get('candidates')})"
-        )
     # Native click (ActionChains) -- a scripted .click() doesn't always count as
     # the trusted user gesture Chrome wants before starting a download. Re-find
     # the confirm button immediately before clicking so a re-render between the
     # poll and the click can't hand us a stale element.
     _log(
-        f"clicking modal 'Download' (candidates={cinfo.get('candidates')}, "
-        f"in_dialog={cinfo.get('in_dialog')}, tag={cinfo.get('tag')}), waiting for zip"
+        f"clicking modal 'Download' (how={cinfo.get('how')}, "
+        f"dialogs_open={cinfo.get('dialogs_open')}, cls={cinfo.get('cls')}), waiting for zip"
     )
     fresh, finfo = _find_confirm()
     target = fresh if fresh is not None else confirm
