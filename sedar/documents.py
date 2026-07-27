@@ -148,14 +148,22 @@ for (const t of tables) {
       cb.click();
     }
   }
-  let picked = 0;
+  let clicked = 0;
   const trs = [...t.querySelectorAll('tbody tr')];
   trs.forEach((tr, ri) => {
     if (!want.has(ri)) return;
     const cb = tr.querySelector('input[type=checkbox]');
-    if (cb) { if (!cb.checked) cb.click(); picked++; }
+    if (cb) { if (!cb.checked) cb.click(); clicked++; }
   });
-  return {picked: picked, requested: want.size};
+  // Count what is ACTUALLY checked afterwards, not how many clicks we issued.
+  // Each tick posts state and re-renders the table, which can discard earlier
+  // ticks -- that produced a 1-document archive when 29 were requested.
+  let checked = 0;
+  for (const tr of t.querySelectorAll('tbody tr')) {
+    const cb = tr.querySelector('input[type=checkbox]');
+    if (cb && cb.checked) checked++;
+  }
+  return {clicked: clicked, checked: checked, requested: want.size};
 }
 return null;
 """
@@ -192,16 +200,17 @@ def list_page_rows(driver) -> list[dict]:
 
 
 def select_rows_on_page(driver, row_indices: list[int]) -> int:
-    """Tick only the given rows' checkboxes. Returns how many were selected."""
+    """Tick only the given rows' checkboxes.
+
+    Returns how many are actually checked afterwards, which is NOT the same as
+    the number of clicks issued: ticking a row posts state and re-renders the
+    table, so earlier ticks can be dropped. Caller must treat a short count as
+    "selection did not stick" and fall back to selecting the whole page.
+    """
     info = driver.execute_script(_SELECT_ROWS_JS, list(row_indices))
     if not info:
         raise RuntimeError("could not find the documents results table to select rows")
-    picked = int(info.get("picked") or 0)
-    if picked != len(row_indices):
-        raise RuntimeError(
-            f"selected {picked} of {len(row_indices)} intended document(s)"
-        )
-    return picked
+    return int(info.get("checked") or 0)
 
 
 def _select_all_on_page(driver) -> bool:
@@ -428,14 +437,25 @@ def download_current_page(
     _close_popups(driver, main_handle)  # clear any strays from a prior batch
     if is_blocked(driver):
         raise RuntimeError("Radware block page detected before download")
-    if row_indices is None:
+    select_all = row_indices is None
+    if not select_all:
+        n = select_rows_on_page(driver, row_indices)
+        if n == len(row_indices):
+            _log(f"selected {n} specific document(s) on this page")
+        else:
+            # Per-row selection didn't hold (the table re-renders on each tick),
+            # so fall back to the whole page rather than downloading a partial
+            # archive. Costs a few already-held documents; dedup drops them.
+            _log(
+                f"per-row selection kept only {n} of {len(row_indices)}; "
+                "falling back to whole-page download"
+            )
+            select_all = True
+    if select_all:
         if not _select_all_on_page(driver):
             raise RuntimeError(
                 "could not find the 'All documents listed on this page' checkbox"
             )
-    else:
-        n = select_rows_on_page(driver, row_indices)
-        _log(f"selected {n} specific document(s) on this page")
     time.sleep(2)
 
     # Clear debris from earlier failed downloads first: it fills the volume, and
