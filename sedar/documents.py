@@ -112,18 +112,52 @@ for (const t of tables) {
   });
   if (idx.document === undefined) continue;
   const out = [];
-  for (const tr of t.querySelectorAll('tbody tr')) {
+  const trs = [...t.querySelectorAll('tbody tr')];
+  trs.forEach((tr, ri) => {
     const tds = tr.querySelectorAll('td');
     const cell = k => (idx[k] !== undefined && tds[idx[k]])
       ? ((tds[idx[k]].innerText || '').trim()) : '';
     const doc = cell('document');
-    if (!doc) continue;
-    out.push({profile: cell('profile'), document: doc, submitted: cell('submitted'),
-              jurisdiction: cell('jurisdiction'), file_size: cell('file_size')});
-  }
+    if (!doc) return;
+    // row_index is the position in tbody, so a caller can tick exactly this
+    // row's download checkbox even though blank rows are skipped here.
+    out.push({row_index: ri, profile: cell('profile'), document: doc,
+              submitted: cell('submitted'), jurisdiction: cell('jurisdiction'),
+              file_size: cell('file_size')});
+  });
   return out;
 }
 return [];
+"""
+
+
+# Tick ONLY the given rows' download checkboxes (clearing any prior selection),
+# so a recheck fetches just the handful of new filings instead of re-downloading
+# the whole 30-document page. Row indices come from list_page_rows' row_index.
+_SELECT_ROWS_JS = r"""
+const want = new Set(arguments[0]);
+const tables = [...document.querySelectorAll('table')];
+for (const t of tables) {
+  const ths = [...t.querySelectorAll('th')].map(th => (th.textContent||'').trim().toLowerCase());
+  if (!ths.some(h => h.includes('document')) || !ths.some(h => h.includes('submitted'))) continue;
+  // Clear everything first: the page-level "all documents" box and every row.
+  for (const cb of document.querySelectorAll('input[type=checkbox]')) {
+    const lab = (cb.closest('label') || cb.parentElement);
+    const txt = (lab && lab.textContent) || '';
+    if (cb.checked && (txt.includes('All documents listed on this page') || cb.closest('table') === t)) {
+      cb.click();
+    }
+  }
+  let picked = 0;
+  const trs = [...t.querySelectorAll('tbody tr')];
+  trs.forEach((tr, ri) => {
+    if (!want.has(ri)) return;
+    const cb = tr.querySelector('input[type=checkbox]');
+    if (cb) { if (!cb.checked) cb.click(); picked++; }
+  });
+  return {picked: picked, requested: want.size};
+}
+return null;
 """
 
 
@@ -146,6 +180,7 @@ def list_page_rows(driver) -> list[dict]:
             continue
         out.append(
             {
+                "row_index": r.get("row_index"),
                 "profile": (r.get("profile") or "").strip(),
                 "document": doc,
                 "submitted": (r.get("submitted") or "").strip(),
@@ -154,6 +189,19 @@ def list_page_rows(driver) -> list[dict]:
             }
         )
     return out
+
+
+def select_rows_on_page(driver, row_indices: list[int]) -> int:
+    """Tick only the given rows' checkboxes. Returns how many were selected."""
+    info = driver.execute_script(_SELECT_ROWS_JS, list(row_indices))
+    if not info:
+        raise RuntimeError("could not find the documents results table to select rows")
+    picked = int(info.get("picked") or 0)
+    if picked != len(row_indices):
+        raise RuntimeError(
+            f"selected {picked} of {len(row_indices)} intended document(s)"
+        )
+    return picked
 
 
 def _select_all_on_page(driver) -> bool:
@@ -359,9 +407,16 @@ return {how: how, dialogs_open: openDlg.length,
 
 
 def download_current_page(
-    driver, download_dir: Path, timeout: float = 180.0
+    driver, download_dir: Path, timeout: float = 180.0,
+    row_indices: list[int] | None = None,
 ) -> str | None:
-    """Select every document on the current results page and download the zip.
+    """Download the current results page's documents as a zip.
+
+    ``row_indices`` restricts the download to specific rows (from
+    ``list_page_rows``' ``row_index``). A recheck that finds 3 new filings on a
+    30-row page then fetches only those 3 instead of re-downloading all 30.
+    Passing None selects the whole page via the "All documents listed on this
+    page" checkbox, which is the right thing for a first full download.
 
     Two-step action: the blue "Download documents" button opens a modal whose
     green "Download" button is the real trigger. Fails fast (rather than hanging)
@@ -373,8 +428,14 @@ def download_current_page(
     _close_popups(driver, main_handle)  # clear any strays from a prior batch
     if is_blocked(driver):
         raise RuntimeError("Radware block page detected before download")
-    if not _select_all_on_page(driver):
-        raise RuntimeError("could not find the 'All documents listed on this page' checkbox")
+    if row_indices is None:
+        if not _select_all_on_page(driver):
+            raise RuntimeError(
+                "could not find the 'All documents listed on this page' checkbox"
+            )
+    else:
+        n = select_rows_on_page(driver, row_indices)
+        _log(f"selected {n} specific document(s) on this page")
     time.sleep(2)
 
     # Clear debris from earlier failed downloads first: it fills the volume, and

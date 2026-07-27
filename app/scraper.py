@@ -134,7 +134,9 @@ def _advance_page(driver, prev_first: int, tries: int = 8) -> bool:
     return False
 
 
-def _download_verified(driver, expected: int) -> tuple[Path | None, dict, bool]:
+def _download_verified(
+    driver, expected: int, row_indices: list[int] | None = None
+) -> tuple[Path | None, dict, bool]:
     """Download the current page's archive and check it really holds the files.
 
     Returns ``(path, manifest, short)``. A short or corrupt archive is discarded
@@ -146,7 +148,8 @@ def _download_verified(driver, expected: int) -> tuple[Path | None, dict, bool]:
     info: dict = {}
     for attempt in range(_SHORT_RETRIES + 1):
         fname = docs.download_current_page(
-            driver, settings.download_dir, timeout=settings.download_timeout_seconds
+            driver, settings.download_dir, timeout=settings.download_timeout_seconds,
+            row_indices=row_indices,
         )
         path = settings.download_dir / fname
         info = inspect_zip(path)
@@ -281,7 +284,21 @@ def download_company(
 
         if page_new:
             ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            src, info, short = _download_verified(driver, len(page_new))
+            # Only fetch the documents we don't already hold. When the entire
+            # page is new (a first full download) fall back to the page-level
+            # "all documents" checkbox, which is the verified path; when only a
+            # few are new (a recheck) tick just those rows.
+            row_indices = None
+            if len(page_new) < len(rows):
+                row_indices = [
+                    r["row_index"] for r in page_new if r.get("row_index") is not None
+                ]
+                print(
+                    f"[scraper] page {page}: fetching {len(row_indices)} new of "
+                    f"{len(rows)} document(s)",
+                    flush=True,
+                )
+            src, info, short = _download_verified(driver, len(page_new), row_indices)
             zip_rel = None
             if src is not None and src.exists():
                 dest_name = f"{ts}_batch{page:04d}.zip"
