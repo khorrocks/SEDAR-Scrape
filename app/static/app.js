@@ -263,12 +263,7 @@ async function loadQueue() {
   el("retry-failed-btn").hidden = !jobs.some((j) => j.status === "failed" && ["download_company", "recheck_company"].includes(j.kind));
   const box = el("queue");
   if (!jobs.length) { box.innerHTML = `<div class="empty">Queue is empty.</div>`; return; }
-  // Pin host/port/encrypt explicitly — noVNC's own guess picks the wrong port
-  // on 443 and fails to connect. Computed from the page so it works on any host.
-  const vHost = location.hostname;
-  const vPort = location.port || (location.protocol === "https:" ? "443" : "80");
-  const vEnc = location.protocol === "https:" ? "1" : "0";
-  const vncUrl = `/novnc/vnc.html?host=${vHost}&port=${vPort}&encrypt=${vEnc}&path=novnc/websockify&autoconnect=true&resize=remote`;
+  const vncUrl = vncViewUrl();
   box.innerHTML = jobs.map((j) => {
     // A finished job shows a full bar (a capped/test download is "done" even
     // though documents_done < total_documents); otherwise show real progress.
@@ -400,6 +395,29 @@ function renderR2Breadcrumb(path) {
 }
 
 el("r2-refresh").addEventListener("click", loadR2);
+
+// --------------------------------------------------------------------------
+// Live browser view (noVNC). Pin host/port/encrypt explicitly — noVNC's own
+// guess picks the wrong port on 443 and fails to connect. Computed from the page
+// so it works on any host.
+function vncViewUrl() {
+  const host = location.hostname;
+  const port = location.port || (location.protocol === "https:" ? "443" : "80");
+  const enc = location.protocol === "https:" ? "1" : "0";
+  return `/novnc/vnc.html?host=${host}&port=${port}&encrypt=${enc}&path=novnc/websockify&autoconnect=true&resize=remote`;
+}
+// Surface an always-available "Live view" button in the header when noVNC is up,
+// so the worker's Chrome can be watched anytime — not only during a CAPTCHA.
+(async () => {
+  try {
+    const v = await api("/vnc/status");
+    if (v.available) {
+      const b = el("live-view-btn");
+      b.href = vncViewUrl();
+      b.hidden = false;
+    }
+  } catch {}
+})();
 
 // --------------------------------------------------------------------------
 // Auth (login gate): show Sign out when enabled; log out clears the session.
