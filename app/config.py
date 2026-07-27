@@ -41,14 +41,15 @@ class Settings:
     worker_poll_seconds: float = float(os.getenv("WORKER_POLL_SECONDS", "5"))
     # Polite pause between document batches (per-page zip downloads). Slower
     # pacing reduces how quickly we trip Radware's rate limiting.
-    batch_pause_seconds: float = float(os.getenv("BATCH_PAUSE_SECONDS", "8"))
+    batch_pause_seconds: float = float(os.getenv("BATCH_PAUSE_SECONDS", "20"))
     # On a Radware block, how long the worker waits before retrying (the block
     # is IP-based and usually clears after the IP cools down).
     radware_backoff_seconds: float = float(os.getenv("RADWARE_BACKOFF_SECONDS", "180"))
     # Max self-heal attempts for one company download before giving up.
     max_download_attempts: int = int(os.getenv("MAX_DOWNLOAD_ATTEMPTS", "15"))
-    # Per-batch (per 30-doc zip) download timeout.
-    download_timeout_seconds: float = float(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "180"))
+    # Per-batch (per 30-doc zip) download timeout. Generous because a throttled
+    # Radware download popup can be very slow to deliver the zip.
+    download_timeout_seconds: float = float(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "600"))
     # Global "test mode": cap every download to this many 30-doc batches. Unset
     # (None) means download everything. A per-request max_batches overrides this.
     default_max_batches: int | None = _int("MAX_BATCHES", None)

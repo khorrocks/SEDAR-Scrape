@@ -20,7 +20,9 @@ from .models import (
     JOB_PAUSED,
     JOB_QUEUED,
     JOB_RUNNING,
+    KIND_DOWNLOAD,
     KIND_ENUMERATE,
+    KIND_RECHECK,
     Company,
     Document,
     Job,
@@ -249,6 +251,37 @@ def clear_finished(db: Session = Depends(get_db)):
     )
     db.commit()
     return {"cleared": result.rowcount}
+
+
+@router.post("/queue/retry-failed")
+def retry_failed(db: Session = Depends(get_db)):
+    """Re-queue every failed download/recheck job (e.g. after a Radware
+    throttling wave). The original failed row is retired to keep the queue tidy;
+    the resume picks up where it left off (fast-forward, dedup-safe)."""
+    import json as _json
+
+    failed = list(
+        db.scalars(
+            select(Job).where(
+                Job.status == JOB_FAILED, Job.kind.in_([KIND_DOWNLOAD, KIND_RECHECK])
+            )
+        )
+    )
+    requeued = 0
+    for j in failed:
+        company = db.get(Company, j.company_id) if j.company_id else None
+        if company is None:
+            continue
+        max_batches = _json.loads(j.params or "{}").get("max_batches")
+        if j.kind == KIND_RECHECK:
+            q.enqueue_recheck(db, company, max_batches=max_batches)
+        else:
+            q.enqueue_download(db, company, max_batches=max_batches)
+        j.status = JOB_CANCELLED  # retire the old failed row
+        j.message = "retried"
+        requeued += 1
+    db.commit()
+    return {"requeued": requeued}
 
 
 @router.delete("/jobs/{job_id}", response_model=JobOut)

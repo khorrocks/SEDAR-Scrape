@@ -122,29 +122,38 @@ def _with_recovery(db, job, holder, do_work, count_fn):
         except Exception as exc:
             progressed = count_fn() > before
             err = "".join(_tb.format_exception_only(type(exc), exc)).strip()
-            blocked = (
-                "perfdrive" in err.lower()
-                or "radware" in err.lower()
-                or _driver_is_blocked(holder)
+            low = err.lower()
+            captcha_blocked = (
+                "perfdrive" in low or "radware" in low or _driver_is_blocked(holder)
             )
-            # Manual solve: if a human clears the captcha in the live view, retry
-            # on the SAME browser (don't reset — that discards the cleared
-            # session) without counting the pause against the attempt cap.
-            if blocked and settings.manual_captcha and holder._driver is not None:
+            # A "download produced no file" timeout with no captcha means Radware
+            # is throttling the document-zip popup. Treat it (like a captcha
+            # block) as transient: back off long and DON'T count it as a hard
+            # stall, so the job patiently retries until the IP cools instead of
+            # dying after 3 tries. Only a real captcha page gets the manual solve.
+            throttled = "produced no file" in low
+            transient = captcha_blocked or throttled
+
+            if captcha_blocked and settings.manual_captcha and holder._driver is not None:
+                # Manual solve: if a human clears the captcha in the live view,
+                # retry on the SAME browser (a reset discards the cleared session)
+                # without counting the pause against the attempt cap.
                 if _await_manual_solve(db, job, holder):
                     attempts -= 1
                     continue
             if progressed:
                 stalls = 0
-            elif not blocked:
+            elif not transient:
                 stalls += 1
             if attempts >= settings.max_download_attempts or stalls >= 3:
                 raise
-            wait = settings.radware_backoff_seconds if blocked else 5
-            kind_msg = (
-                f"Radware throttling the IP — backing off {int(wait)}s"
-                if blocked else "recovering after a failure"
-            )
+            wait = settings.radware_backoff_seconds if transient else 5
+            if throttled:
+                kind_msg = f"SEDAR/Radware throttling downloads — backing off {int(wait)}s"
+            elif captcha_blocked:
+                kind_msg = f"Radware throttling the IP — backing off {int(wait)}s"
+            else:
+                kind_msg = "recovering after a failure"
             print(f"[worker] job {job.id} {kind_msg} (attempt {attempts}, "
                   f"progressed={progressed}): {err}", flush=True)
             job.message = f"{kind_msg} (attempt {attempts})…"

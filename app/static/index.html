@@ -55,7 +55,10 @@
       <section class="panel">
         <div class="queue-head">
           <h2>Download queue</h2>
-          <button id="clear-queue-btn" class="ghost small" hidden>Clear finished</button>
+          <div class="queue-head-actions">
+            <button id="retry-failed-btn" class="ghost small" hidden>↻ Retry failed</button>
+            <button id="clear-queue-btn" class="ghost small" hidden>Clear finished</button>
+          </div>
         </div>
         <p class="hint">One company finishes (in batches of 30) before the next starts.</p>
         <div id="queue" class="queue"></div>

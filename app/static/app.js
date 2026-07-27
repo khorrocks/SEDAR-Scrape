@@ -134,6 +134,14 @@ el("clear-queue-btn").addEventListener("click", async () => {
   loadQueue();
 });
 
+el("retry-failed-btn").addEventListener("click", async () => {
+  try {
+    const r = await api("/queue/retry-failed", { method: "POST" });
+    if (!r.requeued) alert("Nothing to retry.");
+  } catch (e) { alert("Could not retry: " + e.message); return; }
+  loadQueue();
+});
+
 el("enumerate-pause-btn").addEventListener("click", async (e) => {
   const id = e.currentTarget.dataset.jobId;
   if (!id) return;
@@ -252,6 +260,7 @@ async function loadQueue() {
   try { jobs = await api("/queue?include_finished=true&limit=40"); } catch {}
   updateEnumerateControls(jobs);
   el("clear-queue-btn").hidden = !jobs.some((j) => ["done", "failed", "cancelled"].includes(j.status));
+  el("retry-failed-btn").hidden = !jobs.some((j) => j.status === "failed" && ["download_company", "recheck_company"].includes(j.kind));
   const box = el("queue");
   if (!jobs.length) { box.innerHTML = `<div class="empty">Queue is empty.</div>`; return; }
   // Pin host/port/encrypt explicitly — noVNC's own guess picks the wrong port
