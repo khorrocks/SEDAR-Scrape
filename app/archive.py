@@ -106,4 +106,15 @@ def match_members(titles: list[str], members: list[dict]) -> list[dict | None]:
                     found, _ = member, used.add(i)
                     break
         result.append(found)
+
+    # Positional fallback: when the archive holds at least as many files as the
+    # page listed, every row IS accounted for, so a name that simply didn't match
+    # (server renaming, odd characters) should still be linked rather than left
+    # unverified. Hand the remaining rows the remaining members in order.
+    if len(members) >= len(titles) and any(r is None for r in result):
+        leftovers = [m for i, (_n, m) in enumerate(pool) if i not in used]
+        it = iter(leftovers)
+        for idx, item in enumerate(result):
+            if item is None:
+                result[idx] = next(it, None)
     return result

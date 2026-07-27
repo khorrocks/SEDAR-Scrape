@@ -62,6 +62,26 @@ def _dedup_key(row: dict) -> str:
     return "|".join(p.strip() for p in parts)
 
 
+def _page_dedup_keys(rows: list[dict]) -> list[str]:
+    """Dedup keys for one page, disambiguating genuine duplicates.
+
+    Two distinct filings can share title + submitted timestamp + size (seen live:
+    a 30-row page yielded only 29 keys, so one filing could never be indexed and
+    the company was permanently stuck one short). Repeat occurrences get a "|#n"
+    suffix, keyed off their order within the page -- stable because the result
+    set is server-sorted. The FIRST occurrence keeps the original key, so every
+    previously stored key still matches and nothing is re-downloaded.
+    """
+    seen: dict[str, int] = {}
+    keys: list[str] = []
+    for row in rows:
+        base = _dedup_key(row)
+        n = seen.get(base, 0) + 1
+        seen[base] = n
+        keys.append(base if n == 1 else f"{base}|#{n}")
+    return keys
+
+
 def _total_from_count_line(line: str) -> int:
     m = re.search(r"of\s+([\d,]+)\s+results", line or "")
     return int(m.group(1).replace(",", "")) if m else 0
@@ -245,7 +265,7 @@ def download_company(
     while True:
         page += 1
         rows = docs.list_page_rows(driver)
-        page_keys = [_dedup_key(r) for r in rows]
+        page_keys = _page_dedup_keys(rows)
         new_pairs = [(r, k) for r, k in zip(rows, page_keys) if k not in known]
         page_new = [r for r, _ in new_pairs]
 
