@@ -29,6 +29,7 @@ from sedar import documents as sedar_docs
 
 from .models import (
     JOB_PAUSED,
+    JOB_RUNNING,
     KIND_DOWNLOAD,
     KIND_ENUMERATE,
     KIND_PROBE,
@@ -105,6 +106,16 @@ def _with_recovery(db, job, holder, do_work, count_fn):
     while True:
         attempts += 1
         _beat()  # starting an attempt counts as being alive
+        # Bail out if the job was stopped externally (admin force-fail / cancel)
+        # or the worker is shutting down, so a job can't keep running as a zombie.
+        if not _RUNNING:
+            raise RuntimeError("worker shutting down")
+        try:
+            db.refresh(job)
+        except Exception:
+            pass
+        if job.status not in (JOB_RUNNING,):
+            raise RuntimeError(f"job stopped externally (status={job.status})")
         before = count_fn()
         try:
             return do_work(holder.get())
