@@ -284,6 +284,35 @@ def retry_failed(db: Session = Depends(get_db)):
     return {"requeued": requeued}
 
 
+@router.post("/jobs/{job_id}/force-fail", response_model=JobOut)
+def force_fail_job(
+    job_id: int,
+    x_admin_token: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """Force a job to 'failed' regardless of its current state — the escape hatch
+    for a job stuck in a crash/restart loop that normal cancel (queued-only)
+    can't reach. Setting it 'failed' means requeue_stuck won't revive it on the
+    next worker restart, so the loop breaks and the worker goes idle. Admin-gated.
+    """
+    if not settings.admin_token:
+        raise HTTPException(403, "force-fail is disabled (set ADMIN_TOKEN to enable)")
+    if x_admin_token != settings.admin_token:
+        raise HTTPException(401, "invalid admin token")
+    from datetime import datetime, timezone
+
+    job = db.get(Job, job_id)
+    if job is None:
+        raise HTTPException(404, "job not found")
+    job.status = JOB_FAILED
+    job.blocked = False
+    job.pause_requested = False
+    job.message = "force-failed by admin (was looping)"
+    job.finished_at = datetime.now(timezone.utc)
+    db.commit()
+    return _job_out(job)
+
+
 @router.delete("/jobs/{job_id}", response_model=JobOut)
 def cancel_job(job_id: int, db: Session = Depends(get_db)):
     job = db.get(Job, job_id)
