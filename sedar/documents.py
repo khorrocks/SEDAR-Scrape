@@ -220,16 +220,19 @@ def download_current_page(
 
     before = set(p.name for p in download_dir.iterdir()) if download_dir.exists() else set()
 
-    triggers = driver.find_elements(
-        By.XPATH, "//button[contains(normalize-space(.), 'Download documents')]"
-    )
-    if not triggers:
+    def _find_trigger():
+        els = driver.find_elements(
+            By.XPATH, "//button[contains(normalize-space(.), 'Download documents')]"
+        )
+        return els[0] if els else None
+
+    if _find_trigger() is None:
         raise RuntimeError(
             f"no 'Download documents' button (url={driver.current_url})"
         )
     # The modal's confirmation button is labelled exactly "Download" (the blue
     # opener is "Download documents", so an exact match excludes it). The modal
-    # can be slow to render, so poll for it and re-click the opener once.
+    # can be slow to render, so poll for it and re-click the opener.
     def _find_confirm():
         return [
             b
@@ -237,11 +240,25 @@ def download_current_page(
             if b.is_displayed() and b.text.strip() == "Download"
         ]
 
+    # Open the modal with a NATIVE click. A scripted element.click() does not
+    # count as the trusted user gesture SEDAR+/Chrome want here: the browser
+    # reaches the results page and select-all, but the scripted click on
+    # "Download documents" silently fails to open the modal / fire the download
+    # (confirmed live: a real manual click works, a scripted one doesn't). Use
+    # ActionChains (like the confirm button) and re-find the trigger each try so
+    # a stale ref after a re-render can't wedge it. Try a few times.
     confirm = []
-    for attempt in range(2):
-        _log(f"clicking 'Download documents' (attempt {attempt + 1})")
-        _click(driver, triggers[0])
-        deadline = time.time() + 15
+    for attempt in range(4):
+        trig = _find_trigger()
+        if trig is None:
+            time.sleep(1)
+            continue
+        _log(f"clicking 'Download documents' natively (attempt {attempt + 1})")
+        try:
+            ActionChains(driver).move_to_element(trig).pause(0.2).click(trig).perform()
+        except Exception:
+            _click(driver, trig)  # fallback to scripted if native click can't run
+        deadline = time.time() + 12
         while time.time() < deadline:
             confirm = _find_confirm()
             if confirm:
