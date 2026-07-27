@@ -17,6 +17,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
@@ -264,13 +265,18 @@ def download_current_page(
         )
     # The modal's confirmation button is labelled exactly "Download" (the blue
     # opener is "Download documents", so an exact match excludes it). The modal
-    # can be slow to render, so poll for it and re-click the opener.
+    # can be slow to render, so poll for it and re-click the opener. Per-element
+    # try/except: the modal re-renders as it appears, so is_displayed()/text on a
+    # candidate can raise StaleElementReferenceException mid-scan -- skip those.
     def _find_confirm():
-        return [
-            b
-            for b in driver.find_elements(By.XPATH, "//button|//a")
-            if b.is_displayed() and b.text.strip() == "Download"
-        ]
+        out = []
+        for b in driver.find_elements(By.XPATH, "//button|//a"):
+            try:
+                if b.is_displayed() and b.text.strip() == "Download":
+                    out.append(b)
+            except StaleElementReferenceException:
+                continue
+        return out
 
     # Open the modal with a NATIVE click. A scripted element.click() does not
     # count as the trusted user gesture SEDAR+/Chrome want here: the browser
@@ -305,9 +311,13 @@ def download_current_page(
             f"download confirmation modal did not appear (url={driver.current_url})"
         )
     # Native click (ActionChains) -- a scripted .click() doesn't always count as
-    # the trusted user gesture Chrome wants before starting a download.
+    # the trusted user gesture Chrome wants before starting a download. Re-find
+    # the confirm button immediately before clicking so a re-render between the
+    # poll and the click can't hand us a stale element.
     _log("clicking modal 'Download', waiting for zip")
-    ActionChains(driver).move_to_element(confirm[0]).pause(0.3).click(confirm[0]).perform()
+    fresh = _find_confirm()
+    target = fresh[0] if fresh else confirm[0]
+    ActionChains(driver).move_to_element(target).pause(0.3).click(target).perform()
 
     fname = _wait_for_download(download_dir, before, timeout)
     _close_popups(driver, main_handle)  # tidy the download popup before next batch
