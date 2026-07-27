@@ -110,7 +110,7 @@ def cmd_smoke(args) -> int:
         label = f"{company.name} (#{company.number})"
 
     print(f"[smoke] building browser (headless={settings.headless}) …")
-    driver = scraper.make_driver(settings.download_dir)
+    driver = scraper.make_driver(settings.staging_dir)
     try:
         def progress(batches, done, total, msg):
             print(f"[smoke]   progress: batch {batches}, {done} new doc(s), "

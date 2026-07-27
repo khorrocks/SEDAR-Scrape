@@ -119,6 +119,26 @@ def _with_recovery(db, job, holder, do_work, count_fn):
         before = count_fn()
         try:
             return do_work(holder.get())
+        except scraper.IncompleteDownload as exc:
+            # Ended short of the site's reported total. Treated as a normal
+            # failure so the browser is rebuilt and the download resumes from its
+            # checkpoint page; if repeated attempts add no documents the stall
+            # detector below ends the job FAILED rather than silently 'done'.
+            progressed = count_fn() > before
+            print(f"[worker] job {job.id} incomplete: {exc}", flush=True)
+            job.message = f"incomplete — retrying: {exc}"
+            job.error = str(exc)[:2000]
+            db.commit()
+            if progressed:
+                stalls = 0
+            else:
+                stalls += 1
+            if attempts >= settings.max_download_attempts or stalls >= 3:
+                raise
+            holder.reset()
+            _beat()
+            time.sleep(5)
+            continue
         except scraper.ProactiveRebuild:
             # Planned memory reset: rebuild the browser and resume from the same
             # page (fast-forward), without counting against the retry/stall limits.
@@ -223,7 +243,7 @@ class _DriverHolder:
 
     def get(self):
         if self._driver is None:
-            self._driver = scraper.make_driver(settings.download_dir)
+            self._driver = scraper.make_driver(settings.staging_dir)
         return self._driver
 
     def diagnostics(self) -> str:

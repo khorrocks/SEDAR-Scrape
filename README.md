@@ -105,6 +105,15 @@ and lets you browse folders/files read-only.
 If the R2 credentials are **absent**, everything falls back to local disk under
 `DATA_DIR` exactly as before (no exchange/ticker required).
 
+> **R2 is append-only — this platform can never delete from it.** Uploads and
+> reads only: no object, prefix, or bucket deletion, and no lifecycle rule that
+> would expire data later. Enforced in `app/r2.py` by two independent layers —
+> the S3 client is wrapped so destructive methods don't resolve, and a botocore
+> hook rejects any `Delete*` / lifecycle-configuration call before it is signed.
+> Both raise `R2DeleteForbidden`. Scraped filings come from long, rate-limited
+> runs against SEDAR+, so deleting is a deliberate human action taken out of band
+> (Cloudflare dashboard or a separate tool), never something the app can do.
+
 R2 env vars: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`
 (all three required to enable R2), `R2_BUCKET` (default `smallcap-kb`),
 `R2_PREFIX` (default `kb/`), `R2_ENDPOINT` (optional override),

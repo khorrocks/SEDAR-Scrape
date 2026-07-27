@@ -486,6 +486,120 @@ def recheck_all(db: Session = Depends(get_db)):
 # --------------------------------------------------------------------------- #
 # Admin (destructive; gated behind ADMIN_TOKEN)
 # --------------------------------------------------------------------------- #
+def _dir_size(path) -> tuple[int, int]:
+    """(bytes, file_count) for a directory tree; missing paths report zero."""
+    total = files = 0
+    try:
+        for p in path.rglob("*"):
+            if p.is_file():
+                try:
+                    total += p.stat().st_size
+                    files += 1
+                except OSError:
+                    pass
+    except (OSError, ValueError):
+        pass
+    return total, files
+
+
+@router.get("/admin/storage")
+def admin_storage(x_admin_token: str | None = Header(default=None)):
+    """What is actually occupying the persistent volume.
+
+    With R2 configured the volume only needs to hold sedar.db -- archives are
+    staged on ephemeral disk and deleted after upload. Anything else under
+    downloads/ is left over from local-mode runs and is reported here so it can
+    be reviewed before removal (those files predate R2 and may be the only copy,
+    so nothing is deleted automatically)."""
+    if not settings.admin_token:
+        raise HTTPException(403, "admin storage view is disabled (set ADMIN_TOKEN)")
+    if x_admin_token != settings.admin_token:
+        raise HTTPException(401, "invalid admin token")
+    import shutil as _shutil
+
+    data_dir = settings.data_dir
+    usage = _shutil.disk_usage(data_dir)
+    db_path = data_dir / "sedar.db"
+    entries = []
+    try:
+        for child in sorted(data_dir.iterdir()):
+            size, files = _dir_size(child) if child.is_dir() else (
+                child.stat().st_size, 1
+            )
+            entries.append(
+                {
+                    "name": child.name,
+                    "kind": "dir" if child.is_dir() else "file",
+                    "bytes": size,
+                    "mb": round(size / (1024 * 1024), 1),
+                    "files": files,
+                }
+            )
+    except OSError as e:
+        raise HTTPException(500, f"cannot read {data_dir}: {e}")
+
+    leftovers = []
+    if settings.r2_enabled and settings.download_dir.exists():
+        for child in sorted(settings.download_dir.iterdir()):
+            size, files = _dir_size(child) if child.is_dir() else (
+                child.stat().st_size, 1
+            )
+            leftovers.append(
+                {"name": child.name, "mb": round(size / (1024 * 1024), 1), "files": files}
+            )
+
+    return {
+        "data_dir": str(data_dir),
+        "volume_total_mb": round(usage.total / (1024 * 1024), 1),
+        "volume_used_mb": round((usage.total - usage.free) / (1024 * 1024), 1),
+        "volume_free_mb": round(usage.free / (1024 * 1024), 1),
+        "database_mb": round(db_path.stat().st_size / (1024 * 1024), 1)
+        if db_path.exists() else 0,
+        "staging_dir": str(settings.staging_dir),
+        "staging_on_volume": settings.staging_dir == settings.download_dir,
+        "entries": entries,
+        "local_archive_leftovers": leftovers,
+    }
+
+
+@router.post("/admin/storage/purge-local-archives")
+def admin_purge_local_archives(
+    confirm: bool = Query(False, description="must be true to actually delete"),
+    x_admin_token: str | None = Header(default=None),
+):
+    """Delete leftover local archive folders under downloads/ (R2 mode only).
+
+    Defaults to a dry run. These files are NOT mirrored to R2 automatically --
+    early runs happened before R2 was configured -- so review the listing from
+    /admin/storage first; this only ever touches the local volume, never R2.
+    """
+    if not settings.admin_token:
+        raise HTTPException(403, "admin purge is disabled (set ADMIN_TOKEN)")
+    if x_admin_token != settings.admin_token:
+        raise HTTPException(401, "invalid admin token")
+    if not settings.r2_enabled:
+        raise HTTPException(
+            409, "refusing to purge: R2 is not configured, so these are the only copies"
+        )
+    import shutil as _shutil
+
+    removed, freed = [], 0
+    for child in sorted(settings.download_dir.iterdir()):
+        size, _files = _dir_size(child) if child.is_dir() else (child.stat().st_size, 1)
+        removed.append({"name": child.name, "mb": round(size / (1024 * 1024), 1)})
+        freed += size
+        if confirm:
+            try:
+                _shutil.rmtree(child) if child.is_dir() else child.unlink()
+            except OSError as e:
+                raise HTTPException(500, f"failed removing {child.name}: {e}")
+    return {
+        "dry_run": not confirm,
+        "would_free_mb" if not confirm else "freed_mb": round(freed / (1024 * 1024), 1),
+        "items": removed,
+    }
+
+
 @router.post("/admin/reset")
 def admin_reset(
     x_admin_token: str | None = Header(default=None),

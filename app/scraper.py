@@ -39,6 +39,17 @@ ProgressFn = Callable[[int, int, int, str], None]
 """(batches_done, documents_done, total_documents, message) -> None"""
 
 
+class IncompleteDownload(Exception):
+    """A full download ended holding fewer documents than SEDAR+ reports.
+
+    Raised so the job does NOT finish as a success: the worker's recovery loop
+    rebuilds the browser and resumes from the checkpoint page, and if repeated
+    attempts add nothing the job ends FAILED and visible. Previously such a run
+    returned normally, so a company that stopped 126 documents short was marked
+    'done' and the queue moved on to the next company.
+    """
+
+
 class ProactiveRebuild(Exception):
     """Raised by a long download to ask the worker to rebuild the browser (free
     memory) and resume from the current page -- a planned memory reset, not a
@@ -110,7 +121,7 @@ def _parse_count_line(line: str) -> tuple[int, int, int]:
 _SHORT_RETRIES = 2
 
 
-def _advance_page(driver, prev_first: int, tries: int = 8) -> bool:
+def _advance_page(driver, prev_first: int, tries: int = 15, reclicks: int = 2) -> bool:
     """Click 'Next' and wait until the results table has REALLY changed.
 
     ``profiles.next_page`` only clicks and sleeps a fixed interval. If the table
@@ -120,13 +131,24 @@ def _advance_page(driver, prev_first: int, tries: int = 8) -> bool:
     contiguous run went ...batch0004, batch0006..., losing 30 documents. Polling
     the "Displaying X-Y of N" line until X moves makes the advance verifiable.
     """
-    if not profiles.next_page(driver):
-        return False
-    for _ in range(tries):
-        first, _last, _total = _parse_count_line(docs.result_count(driver))
-        if first and first != prev_first:
-            return True
-        time.sleep(2)
+    # Re-click as well as re-poll: right after a browser rebuild the table can be
+    # slow enough that a single click plus a short wait isn't enough, and giving
+    # up here ends the run early.
+    for attempt in range(reclicks + 1):
+        if not profiles.next_page(driver):
+            if attempt == 0:
+                return False  # genuinely no Next control
+            break
+        for _ in range(tries):
+            first, _last, _total = _parse_count_line(docs.result_count(driver))
+            if first and first != prev_first:
+                return True
+            time.sleep(2)
+        print(
+            f"[scraper] still on row {prev_first} after Next "
+            f"(attempt {attempt + 1}/{reclicks + 1})",
+            flush=True,
+        )
     print(
         f"[scraper] page did not advance past row {prev_first} after clicking Next",
         flush=True,
@@ -148,10 +170,10 @@ def _download_verified(
     info: dict = {}
     for attempt in range(_SHORT_RETRIES + 1):
         fname = docs.download_current_page(
-            driver, settings.download_dir, timeout=settings.download_timeout_seconds,
+            driver, settings.staging_dir, timeout=settings.download_timeout_seconds,
             row_indices=row_indices,
         )
-        path = settings.download_dir / fname
+        path = settings.staging_dir / fname
         info = inspect_zip(path)
         if info["ok"] and info["member_count"] >= expected:
             return path, info, False
@@ -277,6 +299,13 @@ def download_company(
         first_idx, last_idx, reported = _parse_count_line(docs.result_count(driver))
         if reported:
             total = reported
+        elif not reported:
+            # The count line can be unreadable for a page (notably right after a
+            # browser rebuild). Falling back to the total already known for this
+            # company matters: every end-of-results and premature-stop check is
+            # conditioned on a truthy `reported`, so a zero here silently
+            # disabled BOTH and let a short run finish as a success.
+            reported = total or (company.reported_total or 0)
 
         if only_new and not page_new:
             # Newest-first: a page with nothing new means we've caught up.
@@ -409,15 +438,29 @@ def download_company(
         company.last_download_at = now
     db.commit()
 
-    return {
+    result = {
         "batches": batches,
         "new_documents": new_docs,
-        "total_reported": total,
+        "total_reported": total or company.reported_total or 0,
         "indexed": len(known),
         "short_batches": short_batches,
         "premature_stop": premature_stop,
         "complete": company.is_complete,
     }
+
+    # A full download that ended short must not be reported as success. Recheck
+    # mode stops deliberately once it catches up, and a capped test run stops by
+    # design, so neither counts as incomplete.
+    target = total or company.reported_total or 0
+    if not only_new and not max_batches and target and len(known) < target:
+        raise IncompleteDownload(
+            f"{company.name}: holding {len(known)} of {target} documents "
+            f"({target - len(known)} missing"
+            + (", pagination stopped early" if premature_stop else "")
+            + (f", {short_batches} short batch(es)" if short_batches else "")
+            + ")"
+        )
+    return result
 
 
 _FF_SETTLE = 3.0  # pause between pages while fast-forwarding (no scraping)

@@ -112,7 +112,23 @@ class Settings:
 
     @property
     def download_dir(self) -> Path:
+        """Where completed archives are KEPT in local (non-R2) mode."""
         return self.data_dir / "downloads"
+
+    @property
+    def staging_dir(self) -> Path:
+        """Where Chrome writes the in-flight download.
+
+        With R2 configured an archive is inspected, uploaded and deleted within
+        seconds, so staging has no reason to sit on the persistent volume -- and
+        putting it there meant transient files (plus debris from failed
+        downloads) competed for space with the database. Staging on ephemeral
+        container disk leaves the volume holding essentially just sedar.db.
+        Without R2 the archives are the only copy, so they stay on the volume.
+        """
+        if self.r2_enabled:
+            return Path(os.getenv("STAGING_DIR", "/tmp/sedar-downloads"))
+        return self.download_dir
 
     @property
     def auth_enabled(self) -> bool:
@@ -149,3 +165,4 @@ class Settings:
 settings = Settings()
 settings.data_dir.mkdir(parents=True, exist_ok=True)
 settings.download_dir.mkdir(parents=True, exist_ok=True)
+settings.staging_dir.mkdir(parents=True, exist_ok=True)
