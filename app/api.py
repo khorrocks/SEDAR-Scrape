@@ -14,6 +14,7 @@ from . import r2
 from .config import settings
 from .db import get_db
 from .models import (
+    BATCH_SHORT,
     JOB_CANCELLED,
     JOB_DONE,
     JOB_FAILED,
@@ -23,6 +24,7 @@ from .models import (
     KIND_DOWNLOAD,
     KIND_ENUMERATE,
     KIND_RECHECK,
+    Batch,
     Company,
     Document,
     Job,
@@ -199,6 +201,55 @@ def recheck_company(company_id: int, db: Session = Depends(get_db)):
     return _job_out(job)
 
 
+@router.get("/companies/{company_id}/coverage")
+def company_coverage(company_id: int, db: Session = Depends(get_db)):
+    """Prove what is actually held for a company.
+
+    ``indexed`` counts document rows; ``verified`` counts only those tied to a
+    real file inside a downloaded archive. ``missing`` is measured against the
+    total SEDAR+ reports, so a run that stopped early can't look finished.
+    """
+    company = _get_company(db, company_id)
+    indexed = db.scalar(
+        select(func.count(Document.id)).where(Document.company_id == company_id)
+    ) or 0
+    verified = db.scalar(
+        select(func.count(Document.id)).where(
+            Document.company_id == company_id, Document.content_sha256.is_not(None)
+        )
+    ) or 0
+    batches = list(
+        db.scalars(
+            select(Batch).where(Batch.company_id == company_id).order_by(Batch.page.asc())
+        )
+    )
+    archived_files = sum(b.member_count or 0 for b in batches)
+    reported = company.reported_total or 0
+    return {
+        "company": company.name,
+        "reported_total": reported,
+        "indexed": indexed,
+        "verified": verified,
+        "archived_files": archived_files,
+        "missing": max(0, reported - indexed),
+        "complete": bool(company.is_complete),
+        "short_batches": sum(1 for b in batches if b.status == BATCH_SHORT),
+        "coverage_checked_at": company.coverage_checked_at,
+        "batches": [
+            {
+                "page": b.page,
+                "status": b.status,
+                "expected": b.expected_count,
+                "members": b.member_count,
+                "zip_bytes": b.zip_bytes,
+                "location": b.location,
+                "note": b.note,
+            }
+            for b in batches
+        ],
+    }
+
+
 @router.get("/companies/{company_id}/documents", response_model=list[DocumentOut])
 def company_documents(company_id: int, db: Session = Depends(get_db)):
     _get_company(db, company_id)
@@ -299,7 +350,9 @@ def reset_company_documents(
         raise HTTPException(401, "invalid admin token")
     company = _get_company(db, company_id)
     n = db.execute(delete(Document).where(Document.company_id == company_id)).rowcount
+    db.execute(delete(Batch).where(Batch.company_id == company_id))
     company.total_documents = 0
+    company.is_complete = False
     company.last_download_at = None
     db.commit()
     return {"company": company.name, "documents_deleted": n}

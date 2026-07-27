@@ -47,9 +47,10 @@ class Settings:
     radware_backoff_seconds: float = float(os.getenv("RADWARE_BACKOFF_SECONDS", "180"))
     # Max self-heal attempts for one company download before giving up.
     max_download_attempts: int = int(os.getenv("MAX_DOWNLOAD_ATTEMPTS", "15"))
-    # Per-batch (per 30-doc zip) download timeout. Generous because a throttled
-    # Radware download popup can be very slow to deliver the zip.
-    download_timeout_seconds: float = float(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "600"))
+    # Per-batch (per 30-doc zip) download timeout. A healthy batch lands in ~40s,
+    # so 240s is already very generous; the old 600s just meant a flaky batch
+    # blocked the queue for ten minutes before the retry could start.
+    download_timeout_seconds: float = float(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "240"))
     # Global "test mode": cap every download to this many 30-doc batches. Unset
     # (None) means download everything. A per-request max_batches overrides this.
     default_max_batches: int | None = _int("MAX_BATCHES", None)

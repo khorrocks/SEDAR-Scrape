@@ -197,6 +197,17 @@ async function loadStats() {
   } catch {}
 }
 
+// Held vs. what SEDAR+ reports, so an incomplete company is obvious rather than
+// looking finished just because the job said "done".
+function coverageLabel(c) {
+  const held = c.total_documents || 0;
+  if (!c.reported_total) return `${held} document(s) downloaded`;
+  const missing = Math.max(0, c.reported_total - held);
+  return c.is_complete
+    ? `<span class="cov ok">✓ ${held}/${c.reported_total} complete</span>`
+    : `<span class="cov warn">${held}/${c.reported_total} — ${missing} missing</span>`;
+}
+
 async function loadSaved() {
   let rows = [];
   try { rows = await api("/saved"); } catch {}
@@ -207,7 +218,7 @@ async function loadSaved() {
       <div class="card-main">
         <div class="name" data-id="${c.id}" data-name="${esc(c.name)}">${esc(c.name)}</div>
         <div class="sub">${esc(c.type || "")} · ${esc(c.jurisdiction || "")} · #${esc(c.number)}</div>
-        <div class="docs">${c.total_documents} document(s) downloaded</div>
+        <div class="docs">${coverageLabel(c)}</div>
         <div class="slug" data-slug="${c.id}">
           ${c.folder_slug
             ? `<span class="slug-tag">${esc(c.folder_slug)}/</span>`

@@ -75,6 +75,12 @@ class Company(Base):
     saved: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
     total_documents: Mapped[int] = mapped_column(Integer, default=0)
+    # How many documents SEDAR+ reports for this company ("... of N results"),
+    # the yardstick for completeness. is_complete is set when the indexed count
+    # reaches it, so a run that stops early can't look finished.
+    reported_total: Mapped[int] = mapped_column(Integer, default=0)
+    is_complete: Mapped[bool] = mapped_column(Boolean, default=False)
+    coverage_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_download_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
@@ -132,6 +138,42 @@ class Job(Base):
     company: Mapped["Company"] = relationship(back_populates="jobs")
 
 
+BATCH_OK = "ok"          # archive held at least as many files as expected
+BATCH_SHORT = "short"    # archive held fewer files than the page selected
+
+
+class Batch(Base):
+    """One downloaded archive (= one results page) and what was actually inside it.
+
+    The document index used to be built purely from the results *table*, so a
+    wrong or truncated zip still produced a full set of Document rows -- the DB
+    claimed files that were never obtained. Recording the archive's real manifest
+    makes possession verifiable: member_count/manifest come from opening the zip,
+    not from the page.
+    """
+
+    __tablename__ = "batches"
+    __table_args__ = (Index("ix_batch_company", "company_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"))
+
+    page: Mapped[int] = mapped_column(Integer, default=0)
+    # R2 object key, or a data_dir-relative path in local mode.
+    location: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    expected_count: Mapped[int] = mapped_column(Integer, default=0)
+    member_count: Mapped[int] = mapped_column(Integer, default=0)
+    zip_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    total_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    # JSON: [{"name": ..., "size": ..., "sha256": ...}, ...]
+    manifest: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    status: Mapped[str] = mapped_column(String(16), default=BATCH_OK)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
 class Document(Base):
     __tablename__ = "documents"
     __table_args__ = (
@@ -154,6 +196,13 @@ class Document(Base):
 
     # Which downloaded zip batch this document arrived in (relative to data_dir).
     batch_zip: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Proof the file is actually in our possession: the entry name inside the
+    # archive and the SHA-256 of its bytes. Set when the batch archive is
+    # inspected; a row without these was indexed from the results table only.
+    archive_member: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    batch_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     downloaded_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
     company: Mapped["Company"] = relationship(back_populates="documents")

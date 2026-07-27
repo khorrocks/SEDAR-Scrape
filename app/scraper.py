@@ -15,6 +15,7 @@ only already-known documents (recheck).
 
 from __future__ import annotations
 
+import json as _json
 import re
 import shutil
 import time
@@ -30,8 +31,9 @@ from sedar import lookup, profiles
 from sedar.browser import BrowserConfig, build_driver
 
 from . import r2
+from .archive import inspect_zip, match_members
 from .config import settings
-from .models import Company, Document
+from .models import BATCH_OK, BATCH_SHORT, Batch, Company, Document
 
 ProgressFn = Callable[[int, int, int, str], None]
 """(batches_done, documents_done, total_documents, message) -> None"""
@@ -63,6 +65,87 @@ def _dedup_key(row: dict) -> str:
 def _total_from_count_line(line: str) -> int:
     m = re.search(r"of\s+([\d,]+)\s+results", line or "")
     return int(m.group(1).replace(",", "")) if m else 0
+
+
+_COUNT_RE = re.compile(
+    r"Displaying\s+([\d,]+)\s*[-–]\s*([\d,]+)\s+of\s+([\d,]+)\s+results", re.I
+)
+
+
+def _parse_count_line(line: str) -> tuple[int, int, int]:
+    """(first, last, total) from 'Displaying 31-60 of 636 results', else zeros.
+
+    ``last`` vs ``total`` is the authoritative end-of-results signal: a missing
+    "Next" control cannot distinguish the real last page from broken pagination,
+    so a run could stop early and still report success.
+    """
+    m = _COUNT_RE.search(line or "")
+    if not m:
+        return 0, 0, _total_from_count_line(line)
+    return tuple(int(g.replace(",", "")) for g in m.groups())  # type: ignore[return-value]
+
+
+# How many times to re-download a page whose archive came back short/corrupt
+# before accepting it and flagging the batch.
+_SHORT_RETRIES = 2
+
+
+def _advance_page(driver, prev_first: int, tries: int = 8) -> bool:
+    """Click 'Next' and wait until the results table has REALLY changed.
+
+    ``profiles.next_page`` only clicks and sleeps a fixed interval. If the table
+    has not re-rendered by then, the next scrape returns the SAME rows -- every
+    key is already known, so the page yields "0 new", no archive is downloaded,
+    and a whole page of filings is silently skipped. Seen live: an otherwise
+    contiguous run went ...batch0004, batch0006..., losing 30 documents. Polling
+    the "Displaying X-Y of N" line until X moves makes the advance verifiable.
+    """
+    if not profiles.next_page(driver):
+        return False
+    for _ in range(tries):
+        first, _last, _total = _parse_count_line(docs.result_count(driver))
+        if first and first != prev_first:
+            return True
+        time.sleep(2)
+    print(
+        f"[scraper] page did not advance past row {prev_first} after clicking Next",
+        flush=True,
+    )
+    return False
+
+
+def _download_verified(driver, expected: int) -> tuple[Path | None, dict, bool]:
+    """Download the current page's archive and check it really holds the files.
+
+    Returns ``(path, manifest, short)``. A short or corrupt archive is discarded
+    and retried; if it is still short on the last attempt we keep it (so whatever
+    did arrive is preserved) and report ``short=True`` so the caller can flag the
+    batch and index only the documents actually present.
+    """
+    path: Path | None = None
+    info: dict = {}
+    for attempt in range(_SHORT_RETRIES + 1):
+        fname = docs.download_current_page(
+            driver, settings.download_dir, timeout=settings.download_timeout_seconds
+        )
+        path = settings.download_dir / fname
+        info = inspect_zip(path)
+        if info["ok"] and info["member_count"] >= expected:
+            return path, info, False
+        note = info.get("error") or f"{info['member_count']} of {expected} file(s)"
+        print(
+            f"[scraper] batch archive incomplete ({note}); "
+            f"attempt {attempt + 1}/{_SHORT_RETRIES + 1}",
+            flush=True,
+        )
+        if attempt < _SHORT_RETRIES:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            path = None
+            time.sleep(settings.batch_pause_seconds)
+    return path, info, True
 
 
 def resolve_profile(driver, company: Company) -> bool:
@@ -157,42 +240,75 @@ def download_company(
             page += 1
         page -= 1  # the loop's page += 1 below lands us back on this page
 
+    short_batches = 0
+    premature_stop = False
     while True:
         page += 1
         rows = docs.list_page_rows(driver)
         page_keys = [_dedup_key(r) for r in rows]
-        page_new = [r for r, k in zip(rows, page_keys) if k not in known]
+        new_pairs = [(r, k) for r, k in zip(rows, page_keys) if k not in known]
+        page_new = [r for r, _ in new_pairs]
+
+        # Where this page sits in the whole result set; drives the end-of-results
+        # check below and records the yardstick for completeness.
+        first_idx, last_idx, reported = _parse_count_line(docs.result_count(driver))
+        if reported:
+            total = reported
 
         if only_new and not page_new:
             # Newest-first: a page with nothing new means we've caught up.
             break
 
-        zip_rel = None
         if page_new:
             ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            fname = docs.download_current_page(
-                driver, settings.download_dir, timeout=settings.download_timeout_seconds
-            )
-            if fname:
-                src = settings.download_dir / fname
+            src, info, short = _download_verified(driver, len(page_new))
+            zip_rel = None
+            if src is not None and src.exists():
                 dest_name = f"{ts}_batch{page:04d}.zip"
-                if src.exists():
-                    if use_r2:
-                        # Upload to R2, then delete the local copy so the volume
-                        # stays small. batch_zip stores the R2 object key.
-                        key = r2.raw_data_key(slug, dest_name)
-                        r2.upload_file(src, key)
-                        src.unlink()
-                        zip_rel = key
-                    else:
-                        # Local fallback: move out of the shared dir into the
-                        # company's folder; batch_zip stores a data_dir-relative path.
-                        dest = company_dir / dest_name
-                        shutil.move(str(src), str(dest))
-                        zip_rel = str(dest.relative_to(settings.data_dir))
+                if use_r2:
+                    # Upload to R2, then delete the local copy so the volume
+                    # stays small. batch_zip stores the R2 object key.
+                    key = r2.raw_data_key(slug, dest_name)
+                    r2.upload_file(src, key)
+                    src.unlink()
+                    zip_rel = key
+                else:
+                    # Local fallback: move out of the shared dir into the
+                    # company's folder; batch_zip stores a data_dir-relative path.
+                    dest = company_dir / dest_name
+                    shutil.move(str(src), str(dest))
+                    zip_rel = str(dest.relative_to(settings.data_dir))
 
-            for r, k in zip(rows, page_keys):
-                if k in known:
+            members = info.get("members", [])
+            batch = Batch(
+                company_id=company.id,
+                page=page,
+                location=zip_rel,
+                expected_count=len(page_new),
+                member_count=info.get("member_count", 0),
+                zip_bytes=info.get("zip_bytes", 0),
+                total_bytes=info.get("total_bytes", 0),
+                manifest=_json.dumps(members),
+                status=BATCH_SHORT if short else BATCH_OK,
+                note=info.get("error"),
+            )
+            db.add(batch)
+            db.flush()  # need batch.id for the document rows
+            if short:
+                short_batches += 1
+                print(
+                    f"[scraper] page {page} flagged short: archive holds "
+                    f"{info.get('member_count', 0)} of {len(page_new)} expected file(s)",
+                    flush=True,
+                )
+
+            # Pair each new row with the file that actually arrived. When the
+            # archive came up short we index ONLY the matched rows, so the
+            # database never claims a document we do not hold -- the rest stay
+            # unknown and are picked up by a later pass.
+            matches = match_members([r.get("document", "") for r in page_new], members)
+            for (r, k), member in zip(new_pairs, matches):
+                if short and member is None:
                     continue
                 db.add(
                     Document(
@@ -203,6 +319,9 @@ def download_company(
                         file_size=r.get("file_size"),
                         dedup_key=k,
                         batch_zip=zip_rel,
+                        batch_id=batch.id,
+                        archive_member=member["name"] if member else None,
+                        content_sha256=member["sha256"] if member else None,
                     )
                 )
                 known.add(k)
@@ -222,18 +341,46 @@ def download_company(
         if (settings.download_rebuild_every_batches
                 and batches >= settings.download_rebuild_every_batches):
             raise ProactiveRebuild()
+        # Authoritative end of results: the last row on this page is the last of
+        # N. Checking this before "is there a Next button" is what distinguishes
+        # finishing from pagination silently breaking part-way through.
+        if reported and last_idx and last_idx >= reported:
+            break
         time.sleep(settings.batch_pause_seconds)
-        if not profiles.next_page(driver):
+        if not _advance_page(driver, first_idx):
+            if reported and last_idx and last_idx < reported:
+                premature_stop = True
+                print(
+                    f"[scraper] pagination stopped at {last_idx} of {reported} "
+                    "results -- company is incomplete",
+                    flush=True,
+                )
             break
 
     now = datetime.now(timezone.utc)
     company.total_documents = len(known)
+    if total:
+        company.reported_total = total
+    # Only claim completeness when the indexed count reaches what the site
+    # reports and nothing was flagged along the way.
+    company.is_complete = bool(
+        total and len(known) >= total and not short_batches and not premature_stop
+    )
+    company.coverage_checked_at = now
     company.last_checked_at = now
     if new_docs:
         company.last_download_at = now
     db.commit()
 
-    return {"batches": batches, "new_documents": new_docs, "total_reported": total}
+    return {
+        "batches": batches,
+        "new_documents": new_docs,
+        "total_reported": total,
+        "indexed": len(known),
+        "short_batches": short_batches,
+        "premature_stop": premature_stop,
+        "complete": company.is_complete,
+    }
 
 
 _FF_SETTLE = 3.0  # pause between pages while fast-forwarding (no scraping)

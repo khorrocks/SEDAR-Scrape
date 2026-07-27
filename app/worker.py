@@ -439,9 +439,16 @@ def _run_job(job_id: int, holder: _DriverHolder) -> None:
             ),
             count_fn=lambda: _doc_count(db, company.id),
         )
+        flags = []
+        if result.get("short_batches"):
+            flags.append(f"{result['short_batches']} short batch(es)")
+        if result.get("premature_stop"):
+            flags.append("pagination stopped early")
         job.message = (
             f"{result['new_documents']} new doc(s) in {result['batches']} batch(es) "
-            f"this pass; {result['total_reported']} reported on site"
+            f"this pass; {result.get('indexed', 0)}/{result['total_reported']} held"
+            + ("" if result.get("complete") else " — INCOMPLETE")
+            + (f" ({'; '.join(flags)})" if flags else "")
         )
         db.commit()
 

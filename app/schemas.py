@@ -21,6 +21,8 @@ class CompanyOut(BaseModel):
     saved: bool
     profile_url: str | None = None
     total_documents: int = 0
+    reported_total: int = 0
+    is_complete: bool = False
     last_download_at: datetime | None = None
     last_checked_at: datetime | None = None
 

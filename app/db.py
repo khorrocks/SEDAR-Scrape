@@ -38,10 +38,18 @@ _ADDED_COLUMNS = {
     "companies": {
         "exchange": "VARCHAR(16)",
         "ticker": "VARCHAR(32)",
+        "reported_total": "INTEGER DEFAULT 0",
+        "is_complete": "BOOLEAN DEFAULT 0",
+        "coverage_checked_at": "TIMESTAMP",
     },
     "jobs": {
         "blocked": "BOOLEAN DEFAULT 0",
         "pause_requested": "BOOLEAN DEFAULT 0",
+    },
+    "documents": {
+        "archive_member": "TEXT",
+        "content_sha256": "VARCHAR(64)",
+        "batch_id": "INTEGER",
     },
 }
 
