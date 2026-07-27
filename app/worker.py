@@ -122,6 +122,9 @@ def _with_recovery(db, job, holder, do_work, count_fn):
         except Exception as exc:
             progressed = count_fn() > before
             err = "".join(_tb.format_exception_only(type(exc), exc)).strip()
+            # Full traceback (file:line) for diagnostics, stored on the job so a
+            # repeating failure can be located without Railway log access.
+            full = "".join(_tb.format_exception(type(exc), exc, exc.__traceback__)).strip()
             low = err.lower()
             captcha_blocked = (
                 "perfdrive" in low or "radware" in low or _driver_is_blocked(holder)
@@ -159,7 +162,7 @@ def _with_recovery(db, job, holder, do_work, count_fn):
             job.message = f"{kind_msg} (attempt {attempts})…"
             # Keep the latest failure text queryable while recovering (not just on
             # a hard failure), so a repeating stall can be diagnosed via the API.
-            job.error = err[:2000]
+            job.error = full[:2000]
             db.commit()
             holder.reset()
             time.sleep(wait)
