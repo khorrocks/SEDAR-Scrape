@@ -449,10 +449,13 @@ def download_company(
     company.total_documents = len(known)
     if total:
         company.reported_total = total
-    # Only claim completeness when the indexed count reaches what the site
-    # reports and nothing was flagged along the way.
+    # In sync when we hold everything the site reports, or are within the
+    # tolerance -- a handful of documents short is normally SEDAR+ counting
+    # duplicate rows as separate filings, not a file we failed to fetch.
+    _target = total or company.reported_total or 0
+    _gap = _target - len(known) if _target else 0
     company.is_complete = bool(
-        total and len(known) >= total and not short_batches and not premature_stop
+        _target and _gap <= settings.sync_tolerance and not short_batches
     )
     company.coverage_checked_at = now
     company.last_checked_at = now
@@ -487,6 +490,10 @@ def download_company(
             flush=True,
         )
         result["converged"] = True
+        return result
+    # Within tolerance counts as done: don't fail the job over a few documents
+    # SEDAR+ counts but doesn't hand over.
+    if target and (target - len(known)) <= settings.sync_tolerance:
         return result
     if not only_new and not max_batches and target and len(known) < target:
         raise IncompleteDownload(

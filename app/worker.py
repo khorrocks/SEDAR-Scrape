@@ -459,17 +459,22 @@ def _run_job(job_id: int, holder: _DriverHolder) -> None:
             ),
             count_fn=lambda: _doc_count(db, company.id),
         )
+        # A company within the sync tolerance reads as a plain success: no
+        # INCOMPLETE banner and no caveats, since the remaining gap isn't a file
+        # we failed to fetch.
+        in_sync = bool(result.get("complete"))
         flags = []
-        if result.get("converged"):
-            flags.append("converged — remaining gap is unreachable on SEDAR")
-        if result.get("short_batches"):
-            flags.append(f"{result['short_batches']} short batch(es)")
-        if result.get("premature_stop"):
-            flags.append("pagination stopped early")
+        if not in_sync:
+            if result.get("converged"):
+                flags.append("converged — remaining gap is unreachable on SEDAR")
+            if result.get("short_batches"):
+                flags.append(f"{result['short_batches']} short batch(es)")
+            if result.get("premature_stop"):
+                flags.append("pagination stopped early")
         job.message = (
             f"{result['new_documents']} new doc(s) in {result['batches']} batch(es) "
             f"this pass; {result.get('indexed', 0)}/{result['total_reported']} held"
-            + ("" if result.get("complete") else " — INCOMPLETE")
+            + ("" if in_sync else " — INCOMPLETE")
             + (f" ({'; '.join(flags)})" if flags else "")
         )
         db.commit()

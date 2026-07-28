@@ -47,6 +47,11 @@ class Settings:
     radware_backoff_seconds: float = float(os.getenv("RADWARE_BACKOFF_SECONDS", "180"))
     # Max self-heal attempts for one company download before giving up.
     max_download_attempts: int = int(os.getenv("MAX_DOWNLOAD_ATTEMPTS", "15"))
+    # Treat a company as in sync when it is within this many documents of the
+    # total SEDAR+ reports. Small gaps are usually a counting artifact on their
+    # side (duplicate rows that collapse to one filing) rather than a file we
+    # failed to fetch -- chasing them just re-walks every page forever.
+    sync_tolerance: int = int(os.getenv("SYNC_TOLERANCE", "5"))
     # Per-batch (per 30-doc zip) download timeout. A healthy batch lands in ~40s,
     # so 240s is already very generous; the old 600s just meant a flaky batch
     # blocked the queue for ten minutes before the retry could start.

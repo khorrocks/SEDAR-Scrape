@@ -197,14 +197,16 @@ async function loadStats() {
   } catch {}
 }
 
-// Held vs. what SEDAR+ reports, so an incomplete company is obvious rather than
-// looking finished just because the job said "done".
+// Held vs. what SEDAR+ reports. A gap of a few documents is normally SEDAR
+// counting duplicate rows as separate filings, so anything within the tolerance
+// reads as in sync; a real shortfall stays loud.
+const SYNC_TOLERANCE = 5;
 function coverageLabel(c) {
   const held = c.total_documents || 0;
   if (!c.reported_total) return `${held} document(s) downloaded`;
   const missing = Math.max(0, c.reported_total - held);
-  return c.is_complete
-    ? `<span class="cov ok">✓ ${held}/${c.reported_total} complete</span>`
+  return (c.is_complete || missing <= SYNC_TOLERANCE)
+    ? `<span class="cov ok">✓ In Sync</span>`
     : `<span class="cov warn">${held}/${c.reported_total} — ${missing} missing</span>`;
 }
 
@@ -266,6 +268,19 @@ async function loadSaved() {
     }));
 }
 
+// Drop the INCOMPLETE caveat from a finished job that is within the sync
+// tolerance, so a company that is effectively in sync reads as plainly done.
+// Also covers jobs recorded before the tolerance existed.
+function jobMessage(j) {
+  const m = j.message || "";
+  const held = m.match(/(\d+)\s*\/\s*(\d+)\s+held/);
+  if (j.status === "done" && held) {
+    const missing = Math.max(0, (+held[2]) - (+held[1]));
+    if (missing <= SYNC_TOLERANCE) return m.replace(/\s*—\s*INCOMPLETE.*$/, "");
+  }
+  return m;
+}
+
 async function loadQueue() {
   let jobs = [];
   try { jobs = await api("/queue?include_finished=true&limit=40"); } catch {}
@@ -293,7 +308,7 @@ async function loadQueue() {
         <span class="title">${esc(label)}</span>
         <span>${cancel} <span class="status ${statusCls}">${statusLabel}</span></span>
       </div>
-      ${j.message ? `<div class="msg">${esc(clip(j.message))}</div>` : ""}
+      ${j.message ? `<div class="msg">${esc(clip(jobMessage(j)))}</div>` : ""}
       ${solve}
       ${j.error ? `<div class="msg" style="color:var(--err)" title="${esc(j.error)}">${esc(clip(j.error))}</div>` : ""}
       <div class="bar"><span style="width:${pct}%"></span></div>
