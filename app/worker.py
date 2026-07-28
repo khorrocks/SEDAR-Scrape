@@ -29,6 +29,7 @@ from sedar import documents as sedar_docs
 
 from .models import (
     JOB_PAUSED,
+    JOB_QUEUED,
     JOB_RUNNING,
     KIND_DOWNLOAD,
     KIND_ENUMERATE,
@@ -78,6 +79,10 @@ def _await_manual_solve(db, job, holder) -> bool:
     deadline = time.time() + settings.captcha_wait_seconds
     while _RUNNING and time.time() < deadline:
         time.sleep(3)
+        # Waiting for a human is not a stall. Without this the watchdog fired at
+        # 420s and restarted the worker mid-wait, so the solve window was never
+        # the configured 600s -- it just re-detected the CAPTCHA and started over.
+        _beat()
         try:
             still_blocked = sedar_docs.is_blocked(d)
         except Exception:
@@ -520,12 +525,40 @@ def run_forever() -> None:
                 print(f"[worker] job {job_id} done")
             except Exception as exc:  # keep the worker alive across failures
                 err = "".join(traceback.format_exception_only(type(exc), exc)).strip()
-                err += holder.diagnostics()  # capture browser state before reset
+                diag = holder.diagnostics()  # capture browser state before reset
+                err += diag
+                low = (err + diag).lower()
+                walled = (
+                    "perfdrive" in low or "radware" in low or "captcha" in low
+                )
                 print(f"[worker] job {job_id} FAILED: {err}")
                 traceback.print_exc()
                 holder.reset()  # browser may be in a bad state; rebuild next job
-                with session_scope() as db:
-                    q.finish_job(db, db.get(Job, job_id), ok=False, error=err)
+                if walled:
+                    # A bot wall blocks EVERY company, not just this one. Failing
+                    # here made the worker grab the next job, hit the same wall,
+                    # and burn the entire queue (10 jobs lost in ~35 minutes).
+                    # Put the job back and wait for the IP to cool or a human to
+                    # solve the challenge.
+                    wait = settings.radware_backoff_seconds
+                    print(
+                        f"[worker] job {job_id} hit a bot wall — requeued; "
+                        f"pausing {int(wait)}s before taking more work",
+                        flush=True,
+                    )
+                    with session_scope() as db:
+                        jb = db.get(Job, job_id)
+                        if jb is not None:
+                            jb.status = JOB_QUEUED
+                            jb.blocked = False
+                            jb.started_at = None
+                            jb.message = "blocked by SEDAR+ — waiting to retry"
+                            jb.error = err[:2000]
+                            db.commit()
+                    time.sleep(wait)
+                else:
+                    with session_scope() as db:
+                        q.finish_job(db, db.get(Job, job_id), ok=False, error=err)
             finally:
                 _active_job_id = None  # disarm between jobs
     finally:
