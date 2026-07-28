@@ -131,21 +131,27 @@ def _advance_page(driver, prev_first: int, tries: int = 15, reclicks: int = 2) -
     contiguous run went ...batch0004, batch0006..., losing 30 documents. Polling
     the "Displaying X-Y of N" line until X moves makes the advance verifiable.
     """
-    # Re-click as well as re-poll: right after a browser rebuild the table can be
-    # slow enough that a single click plus a short wait isn't enough, and giving
-    # up here ends the run early.
+    # Wait on the TABLE, not the count line: the count line is a sibling element
+    # that updates first, so trusting it meant scraping the previous page's rows
+    # -- every key looked known, the page reported "0 new", and its filings were
+    # skipped entirely. Re-click as well as re-poll, since the table is slow to
+    # re-render right after a browser rebuild.
+    before_sig = docs.first_row_signature(driver)
     for attempt in range(reclicks + 1):
         if not profiles.next_page(driver):
             if attempt == 0:
                 return False  # genuinely no Next control
             break
         for _ in range(tries):
+            sig = docs.first_row_signature(driver)
             first, _last, _total = _parse_count_line(docs.result_count(driver))
-            if first and first != prev_first:
+            # Require the rows to have actually changed; the count line moving is
+            # necessary but not sufficient.
+            if sig and sig != before_sig and (not first or first != prev_first):
                 return True
             time.sleep(2)
         print(
-            f"[scraper] still on row {prev_first} after Next "
+            f"[scraper] table did not re-render after Next "
             f"(attempt {attempt + 1}/{reclicks + 1})",
             flush=True,
         )
@@ -280,7 +286,7 @@ def download_company(
                 # Keep batches_done pinned at the target so a crash during
                 # fast-forward still resumes there.
                 progress(start_page, new_docs, total, f"resuming: fast-forwarding to page {page}/{start_page}")
-            if not _advance_or_raise_if_blocked(driver, _FF_SETTLE):
+            if not _advance_or_raise_if_blocked(driver, _FF_SETTLE, verify=True):
                 break  # genuine end of results before the resume point
             page += 1
         page -= 1  # the loop's page += 1 below lands us back on this page
@@ -471,13 +477,26 @@ def download_company(
 _FF_SETTLE = 3.0  # pause between pages while fast-forwarding (no scraping)
 
 
-def _advance_or_raise_if_blocked(driver, settle: float) -> bool:
+def _advance_or_raise_if_blocked(driver, settle: float, verify: bool = False) -> bool:
     """Click 'Next'. Return True if we advanced, False at the genuine end of the
     list. If we couldn't advance because of a Radware/captcha page (not the end),
     raise so the worker's recovery pauses for a manual solve instead of silently
-    treating a mid-walk block as 'done'."""
+    treating a mid-walk block as 'done'.
+
+    ``verify`` waits for the results table to actually re-render before reporting
+    success. A fast-forward that "advances" without the rows changing lands on
+    the wrong page, and the caller then scrapes and downloads the wrong batch.
+    """
+    before_sig = docs.first_row_signature(driver) if verify else ""
     if profiles.next_page(driver, settle=settle):
-        return True
+        if not verify:
+            return True
+        for _ in range(10):
+            sig = docs.first_row_signature(driver)
+            if sig and sig != before_sig:
+                return True
+            time.sleep(2)
+        return False  # clicked, but the table never changed
     if docs.is_blocked(driver):
         raise RuntimeError("Radware block during enumeration — solve the captcha to continue")
     return False

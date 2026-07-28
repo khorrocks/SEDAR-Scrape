@@ -199,6 +199,34 @@ def list_page_rows(driver) -> list[dict]:
     return out
 
 
+_FIRST_ROW_JS = r"""
+const tables = [...document.querySelectorAll('table')];
+for (const t of tables) {
+  const ths = [...t.querySelectorAll('th')].map(th => (th.textContent||'').trim().toLowerCase());
+  if (!ths.some(h => h.includes('document')) || !ths.some(h => h.includes('submitted'))) continue;
+  const tr = t.querySelector('tbody tr');
+  if (!tr) return '';
+  return [...tr.querySelectorAll('td')].map(td => (td.innerText||'').trim()).join('|').slice(0, 300);
+}
+return '';
+"""
+
+
+def first_row_signature(driver) -> str:
+    """Identity of the results table's first row.
+
+    Used to confirm a pagination click actually re-rendered the table. The
+    "Displaying X-Y of N" line is a sibling of the table and updates first, so
+    waiting on it let the scraper read the PREVIOUS page's rows: every key looked
+    known, the page reported "0 new", nothing downloaded, and that page's filings
+    were skipped. The rows themselves are the only trustworthy signal.
+    """
+    try:
+        return driver.execute_script(_FIRST_ROW_JS) or ""
+    except Exception:
+        return ""
+
+
 def select_rows_on_page(driver, row_indices: list[int]) -> int:
     """Tick only the given rows' checkboxes.
 
