@@ -97,6 +97,14 @@ class Settings:
     auth_username: str | None = os.getenv("AUTH_USERNAME") or None
     auth_password: str | None = os.getenv("AUTH_PASSWORD") or None
 
+    # --- Alerts ---
+    # Slack incoming-webhook URL. Set it to be told when a CAPTCHA wall stops the
+    # queue; unset disables alerting entirely. Kept in env, never in the repo.
+    slack_webhook_url: str | None = os.getenv("SLACK_WEBHOOK_URL") or None
+    # Minimum seconds between identical alerts. The recovery loop re-detects a
+    # wall on every retry, so without this one episode would post repeatedly.
+    slack_cooldown_seconds: float = float(os.getenv("SLACK_COOLDOWN_SECONDS", "900"))
+
     # --- Manual CAPTCHA solving (noVNC live browser view) ---
     # When True, a Radware/captcha block pauses the job (keeping the SAME
     # browser) and waits for a human to solve it via the live noVNC view,

@@ -74,6 +74,13 @@ def _await_manual_solve(db, job, holder) -> bool:
     job.message = ("CAPTCHA detected — open the live browser view and solve it "
                    "to continue")
     db.commit()
+    # Nothing proceeds until a human solves this, so it is worth interrupting
+    # someone for. Rate-limited inside notify.slack: the recovery loop re-detects
+    # the same wall on every retry.
+    notify.slack(
+        "SEDAR Scraper: CAPTCHA wall hit.  Please solve CAPTCHA on Live Viewer",
+        key="captcha-wall",
+    )
     print(f"[worker] job {job.id} paused for manual CAPTCHA solve "
           f"(up to {int(settings.captcha_wait_seconds)}s)", flush=True)
     deadline = time.time() + settings.captcha_wait_seconds
@@ -202,6 +209,7 @@ def _with_recovery(db, job, holder, do_work, count_fn):
             db.commit()
             holder.reset()
             time.sleep(wait)
+from . import notify
 from . import queue as q
 from . import scraper
 
