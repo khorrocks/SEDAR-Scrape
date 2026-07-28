@@ -51,6 +51,21 @@ def _company_count(db) -> int:
     return db.scalar(select(func.count(Company.id))) or 0
 
 
+def _sleep_alive(seconds: float) -> None:
+    """Sleep while telling the watchdog we are still healthy.
+
+    A backoff is deliberate waiting, not a stall. Sleeping straight through it
+    was fatal: the download timeout (240s) plus the backoff (180s) equals the
+    watchdog threshold (420s) exactly, so the worker was killed at the precise
+    moment it was about to retry -- the same cycle repeating forever without ever
+    getting a second attempt.
+    """
+    deadline = time.time() + seconds
+    while _RUNNING and time.time() < deadline:
+        time.sleep(min(20.0, max(0.0, deadline - time.time())))
+        _beat()
+
+
 def _driver_is_blocked(holder) -> bool:
     """True if the current browser is sitting on a Radware/captcha page."""
     d = holder._driver
@@ -195,9 +210,12 @@ def _with_recovery(db, job, holder, do_work, count_fn):
                 raise
             wait = settings.radware_backoff_seconds if transient else 5
             if throttled:
-                kind_msg = f"SEDAR/Radware throttling downloads — backing off {int(wait)}s"
+                # Say what actually happened. Calling every missing zip
+                # "throttling" was a guess baked in early on, and it made a plain
+                # failed download look like a rate limit for the rest of the run.
+                kind_msg = f"download did not arrive — retrying in {int(wait)}s"
             elif captcha_blocked:
-                kind_msg = f"Radware throttling the IP — backing off {int(wait)}s"
+                kind_msg = f"blocked by SEDAR+ — backing off {int(wait)}s"
             else:
                 kind_msg = "recovering after a failure"
             print(f"[worker] job {job.id} {kind_msg} (attempt {attempts}, "
@@ -208,7 +226,7 @@ def _with_recovery(db, job, holder, do_work, count_fn):
             job.error = full[:2000]
             db.commit()
             holder.reset()
-            time.sleep(wait)
+            _sleep_alive(wait)
 from . import notify
 from . import queue as q
 from . import scraper
@@ -229,12 +247,19 @@ def _beat() -> None:
 
 
 def _watchdog() -> None:
+    # Never trip faster than a legitimately slow download can finish, or the
+    # supervisor kills work that was about to succeed. A configured 420s sat
+    # exactly at download_timeout (240s) + backoff (180s), so the retry was
+    # killed every single cycle.
+    limit = max(
+        settings.watchdog_seconds, settings.download_timeout_seconds + 120
+    )
     while _RUNNING:
         time.sleep(30)
         if not settings.watchdog_seconds or _active_job_id is None:
             continue
         idle = time.time() - _last_beat
-        if idle > settings.watchdog_seconds:
+        if idle > limit:
             print(
                 f"[watchdog] job {_active_job_id}: no progress for {int(idle)}s "
                 f"(> {int(settings.watchdog_seconds)}s) — hard-exiting to force a restart",
