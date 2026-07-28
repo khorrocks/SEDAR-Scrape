@@ -54,6 +54,14 @@ class Settings:
     # Global "test mode": cap every download to this many 30-doc batches. Unset
     # (None) means download everything. A per-request max_batches overrides this.
     default_max_batches: int | None = _int("MAX_BATCHES", None)
+    # Fetch only the NEW documents on a partially-held page by ticking individual
+    # row checkboxes. OFF by default: SEDAR+ re-renders the results table on every
+    # tick and discards the previous ones, so the selection never holds (observed:
+    # 0 of 29 kept) AND it leaves the page in a state where the page-level
+    # "All documents" checkbox no longer works either -- the archive came back
+    # with 1 file instead of 29, wedging the run. Whole-page downloads re-fetch a
+    # few already-held documents, which dedup discards.
+    selective_download: bool = _bool("SELECTIVE_DOWNLOAD", False)
     # Proactively rebuild the browser after this many downloaded batches to bound
     # Chrome's memory on long downloads (the worker resumes from the same page via
     # fast-forward). Prevents the container OOM-killing the worker mid-download.

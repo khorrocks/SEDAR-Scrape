@@ -329,7 +329,7 @@ def download_company(
             # "all documents" checkbox, which is the verified path; when only a
             # few are new (a recheck) tick just those rows.
             row_indices = None
-            if len(page_new) < len(rows):
+            if settings.selective_download and len(page_new) < len(rows):
                 row_indices = [
                     r["row_index"] for r in page_new if r.get("row_index") is not None
                 ]
