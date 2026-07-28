@@ -558,7 +558,18 @@ def run_forever() -> None:
                     time.sleep(wait)
                 else:
                     with session_scope() as db:
-                        q.finish_job(db, db.get(Job, job_id), ok=False, error=err)
+                        jb = db.get(Job, job_id)
+                        q.finish_job(db, jb, ok=False, error=err)
+                        # Put the company back in line by itself. It resumes from
+                        # its checkpoint and re-downloads nothing, so an unattended
+                        # queue finishes instead of stalling on the first failure.
+                        again = q.auto_retry(db, jb, settings.max_job_retries)
+                        if again is not None:
+                            print(
+                                f"[worker] job {job_id} re-queued automatically "
+                                f"as job {again.id}",
+                                flush=True,
+                            )
             finally:
                 _active_job_id = None  # disarm between jobs
     finally:

@@ -97,6 +97,7 @@ button:disabled { opacity: .5; cursor: default; filter: none; }
 .card .slug { font-size: 12px; margin-top: 4px; display: flex; align-items: center; gap: 8px; }
 .card .slug-tag { color: var(--text); font-family: ui-monospace, Menlo, Consolas, monospace; }
 .card .slug-warn { color: var(--warn); }
+.card-actions { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
 .card .slug-edit { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
 .card .slug-edit input.mini {
   width: 100px; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--border);

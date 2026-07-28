@@ -40,6 +40,7 @@ def enqueue_download(
     company: Company,
     kind: str = KIND_DOWNLOAD,
     max_batches: int | None = None,
+    attempt: int = 1,
 ) -> Job:
     """Queue a download (or recheck) for a company, unless one is already active.
 
@@ -49,7 +50,12 @@ def enqueue_download(
     existing = _active_job_for_company(db, company.id)
     if existing:
         return existing
-    params = json.dumps({"max_batches": max_batches}) if max_batches is not None else None
+    payload: dict = {}
+    if max_batches is not None:
+        payload["max_batches"] = max_batches
+    if attempt > 1:
+        payload["attempt"] = attempt
+    params = json.dumps(payload) if payload else None
     job = Job(kind=kind, company_id=company.id, status=JOB_QUEUED, params=params)
     db.add(job)
     db.commit()
@@ -59,6 +65,37 @@ def enqueue_download(
 
 def enqueue_recheck(db: Session, company: Company, max_batches: int | None = None) -> Job:
     return enqueue_download(db, company, kind=KIND_RECHECK, max_batches=max_batches)
+
+
+def auto_retry(db: Session, job: Job | None, max_attempts: int) -> Job | None:
+    """Put a failed company download back in the queue automatically.
+
+    Bot walls, browser wedges and download timeouts are routine against SEDAR+,
+    and a company that stops short is nearly always finishable on a later pass --
+    it resumes from its checkpoint and re-downloads nothing. Leaving that to a
+    human meant a partially-collected company sat untouched until someone
+    noticed. Retries are capped so a genuinely broken company can't cycle
+    forever, and it goes to the BACK of the queue so one bad company cannot
+    starve the others.
+    """
+    if job is None or job.company_id is None:
+        return None
+    if job.kind not in (KIND_DOWNLOAD, KIND_RECHECK):
+        return None
+    params = json.loads(job.params or "{}")
+    attempt = int(params.get("attempt") or 1)
+    if attempt >= max_attempts:
+        return None
+    company = db.get(Company, job.company_id)
+    if company is None:
+        return None
+    return enqueue_download(
+        db,
+        company,
+        kind=job.kind,
+        max_batches=params.get("max_batches"),
+        attempt=attempt + 1,
+    )
 
 
 def enqueue_enumerate(db: Session, profile_type: str = "Company",

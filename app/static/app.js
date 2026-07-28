@@ -234,13 +234,26 @@ async function loadSaved() {
           <button class="link-btn" data-canceledit="${c.id}">cancel</button>
         </div>
       </div>
-      <button class="ghost small" data-recheck="${c.id}">Check new</button>
+      <div class="card-actions">
+        <button class="ghost small" data-download="${c.id}">Download</button>
+        <button class="ghost small" data-recheck="${c.id}">Check new</button>
+      </div>
     </div>`).join("");
   box.querySelectorAll(".name").forEach((n) =>
     n.addEventListener("click", () => openDrawer(+n.dataset.id, n.dataset.name)));
   box.querySelectorAll("[data-recheck]").forEach((b) =>
     b.addEventListener("click", async () => {
       await api(`/companies/${b.dataset.recheck}/recheck`, { method: "POST" });
+      loadQueue();
+    }));
+  // Queue a full download for this company without opening the drawer, so an
+  // unfinished company can be put back in line in one click.
+  box.querySelectorAll("[data-download]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      b.disabled = true;
+      try { await api(`/companies/${b.dataset.download}/download`, { method: "POST" }); }
+      catch (e) { alert("Could not queue: " + e.message); }
+      b.disabled = false;
       loadQueue();
     }));
   const toggleEdit = (id, editing) => {

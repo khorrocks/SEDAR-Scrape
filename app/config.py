@@ -52,6 +52,11 @@ class Settings:
     # side (duplicate rows that collapse to one filing) rather than a file we
     # failed to fetch -- chasing them just re-walks every page forever.
     sync_tolerance: int = int(os.getenv("SYNC_TOLERANCE", "5"))
+    # How many times a company's download is automatically re-queued after a
+    # failure before it needs a human. Bot walls, browser wedges and timeouts are
+    # routine here, and a company that stops short should get itself back in line
+    # rather than waiting for someone to notice and press a button.
+    max_job_retries: int = int(os.getenv("MAX_JOB_RETRIES", "6"))
     # Per-batch (per 30-doc zip) download timeout. A healthy batch lands in ~40s,
     # so 240s is already very generous; the old 600s just meant a flaky batch
     # blocked the queue for ten minutes before the retry could start.
