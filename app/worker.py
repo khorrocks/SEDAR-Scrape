@@ -460,6 +460,8 @@ def _run_job(job_id: int, holder: _DriverHolder) -> None:
             count_fn=lambda: _doc_count(db, company.id),
         )
         flags = []
+        if result.get("converged"):
+            flags.append("converged — remaining gap is unreachable on SEDAR")
         if result.get("short_batches"):
             flags.append(f"{result['short_batches']} short batch(es)")
         if result.get("premature_stop"):

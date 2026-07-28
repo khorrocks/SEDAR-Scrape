@@ -73,17 +73,23 @@ def _dedup_key(row: dict) -> str:
     return "|".join(p.strip() for p in parts)
 
 
-def _page_dedup_keys(rows: list[dict]) -> list[str]:
-    """Dedup keys for one page, disambiguating genuine duplicates.
+def _page_dedup_keys(rows: list[dict], seen: dict[str, int] | None = None) -> list[str]:
+    """Dedup keys for a page, disambiguating genuine duplicates.
 
-    Two distinct filings can share title + submitted timestamp + size (seen live:
-    a 30-row page yielded only 29 keys, so one filing could never be indexed and
-    the company was permanently stuck one short). Repeat occurrences get a "|#n"
-    suffix, keyed off their order within the page -- stable because the result
-    set is server-sorted. The FIRST occurrence keeps the original key, so every
-    previously stored key still matches and nothing is re-downloaded.
+    Two distinct filings can share title + submitted timestamp + size, so without
+    this one of them could never be indexed and the company stayed permanently
+    short. Repeat occurrences get a "|#n" suffix from their order in the result
+    set, which is stable because the results are server-sorted. The FIRST
+    occurrence keeps the original key, so previously stored keys still match and
+    nothing is re-downloaded.
+
+    ``seen`` must be shared across the whole pass. Counting per page left a pair
+    of identical filings that straddled a page boundary both claiming the base
+    key: Abaxx held all 1034 files in its archives but could only index 1033,
+    and re-scanning could never resolve it because nothing was actually missing.
     """
-    seen: dict[str, int] = {}
+    if seen is None:
+        seen = {}
     keys: list[str] = []
     for row in rows:
         base = _dedup_key(row)
@@ -293,10 +299,14 @@ def download_company(
 
     short_batches = 0
     premature_stop = False
+    reached_end = False
+    # Occurrence counter shared across every page of this pass, so duplicate
+    # filings that straddle a page boundary still get distinct keys.
+    pass_seen: dict[str, int] = {}
     while True:
         page += 1
         rows = docs.list_page_rows(driver)
-        page_keys = _page_dedup_keys(rows)
+        page_keys = _page_dedup_keys(rows, pass_seen)
         new_pairs = [(r, k) for r, k in zip(rows, page_keys) if k not in known]
         page_new = [r for r, _ in new_pairs]
 
@@ -422,6 +432,7 @@ def download_company(
         # N. Checking this before "is there a Next button" is what distinguishes
         # finishing from pagination silently breaking part-way through.
         if reported and last_idx and last_idx >= reported:
+            reached_end = True
             break
         time.sleep(settings.batch_pause_seconds)
         if not _advance_page(driver, first_idx):
@@ -463,6 +474,20 @@ def download_company(
     # mode stops deliberately once it catches up, and a capped test run stops by
     # design, so neither counts as incomplete.
     target = total or company.reported_total or 0
+    # Converged: we walked the whole result set and it offered nothing we don't
+    # already hold. Any remaining shortfall is a counting artifact on SEDAR's
+    # side (or duplicate rows), not a file we failed to fetch -- retrying can
+    # only loop, as Abaxx did while its archives already held all 1034 files.
+    converged = reached_end and new_docs == 0
+    if converged and target and len(known) < target:
+        print(
+            f"[scraper] converged: walked all results and found nothing new; "
+            f"holding {len(known)} of {target} reported "
+            f"({target - len(known)} unreachable, likely duplicate rows)",
+            flush=True,
+        )
+        result["converged"] = True
+        return result
     if not only_new and not max_batches and target and len(known) < target:
         raise IncompleteDownload(
             f"{company.name}: holding {len(known)} of {target} documents "
