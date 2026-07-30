@@ -203,7 +203,9 @@ async function loadStats() {
 const SYNC_TOLERANCE = 5;
 function coverageLabel(c) {
   const held = c.total_documents || 0;
-  if (!c.reported_total) return `${held} document(s) downloaded`;
+  const paused = c.paused ? `<span class="cov paused">⏸ PAUSED</span> ` : "";
+  if (!c.reported_total) return `${paused}${held} document(s) downloaded`;
+  if (c.paused) return `${paused}${held}/${c.reported_total} held`;
   const missing = Math.max(0, c.reported_total - held);
   return (c.is_complete || missing <= SYNC_TOLERANCE)
     ? `<span class="cov ok">✓ In Sync</span>`
@@ -235,8 +237,11 @@ async function loadSaved() {
         </div>
       </div>
       <div class="card-actions">
-        <button class="ghost small" data-download="${c.id}">Download</button>
-        <button class="ghost small" data-recheck="${c.id}">Check new</button>
+        <button class="ghost small" data-download="${c.id}" ${c.paused ? "disabled" : ""}>Download</button>
+        <button class="ghost small" data-recheck="${c.id}" ${c.paused ? "disabled" : ""}>Check new</button>
+        <button class="ghost small ${c.paused ? "unpause" : ""}" data-pause="${c.id}" data-on="${c.paused ? 1 : 0}">
+          ${c.paused ? "▶ Unpause" : "⏸ Pause"}
+        </button>
       </div>
     </div>`).join("");
   box.querySelectorAll(".name").forEach((n) =>
@@ -245,6 +250,17 @@ async function loadSaved() {
     b.addEventListener("click", async () => {
       await api(`/companies/${b.dataset.recheck}/recheck`, { method: "POST" });
       loadQueue();
+    }));
+  // Hard pause/unpause. The flag lives on the company, so it survives queue
+  // clears, restarts and cron rechecks until explicitly lifted.
+  box.querySelectorAll("[data-pause]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const on = b.dataset.on === "1";
+      b.disabled = true;
+      try {
+        await api(`/companies/${b.dataset.pause}/${on ? "unpause" : "pause"}`, { method: "POST" });
+      } catch (e) { alert("Could not change pause: " + e.message); }
+      loadSaved(); loadQueue();
     }));
   // Queue a full download for this company without opening the drawer, so an
   // unfinished company can be put back in line in one click.

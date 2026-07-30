@@ -41,6 +41,7 @@ _ADDED_COLUMNS = {
         "reported_total": "INTEGER DEFAULT 0",
         "is_complete": "BOOLEAN DEFAULT 0",
         "coverage_checked_at": "TIMESTAMP",
+        "paused": "BOOLEAN DEFAULT 0",
     },
     "jobs": {
         "blocked": "BOOLEAN DEFAULT 0",

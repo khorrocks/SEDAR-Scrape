@@ -19,6 +19,7 @@ class CompanyOut(BaseModel):
     ticker: str | None = None
     folder_slug: str | None = None
     saved: bool
+    paused: bool = False
     profile_url: str | None = None
     total_documents: int = 0
     reported_total: int = 0

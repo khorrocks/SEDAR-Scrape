@@ -48,6 +48,16 @@ def _job_out(job: Job) -> JobOut:
     return out
 
 
+def _require_job(job: Job | None, company: Company) -> Job:
+    """A paused company refuses work; say so plainly rather than 500ing."""
+    if job is None:
+        raise HTTPException(
+            409,
+            f"{company.name} is paused — unpause it before queueing work",
+        )
+    return job
+
+
 # --------------------------------------------------------------------------- #
 # Catalog search / autocomplete
 # --------------------------------------------------------------------------- #
@@ -143,7 +153,11 @@ def add_company(req: AddCompanyRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(company)
     if req.download:
-        return _job_out(q.enqueue_download(db, company, max_batches=req.max_batches))
+        return _job_out(
+            _require_job(
+                q.enqueue_download(db, company, max_batches=req.max_batches), company
+            )
+        )
     return CompanyOut.model_validate(company)
 
 
@@ -170,7 +184,9 @@ def save_company(company_id: int, req: SaveRequest, db: Session = Depends(get_db
     company.saved = True
     db.commit()
     if req.download:
-        job = q.enqueue_download(db, company, max_batches=req.max_batches)
+        job = _require_job(
+            q.enqueue_download(db, company, max_batches=req.max_batches), company
+        )
         return _job_out(job)
     return CompanyOut.model_validate(company)
 
@@ -190,15 +206,49 @@ def download_company(
     db: Session = Depends(get_db),
 ):
     company = _get_company(db, company_id)
-    job = q.enqueue_download(db, company, max_batches=max_batches)
+    job = _require_job(q.enqueue_download(db, company, max_batches=max_batches), company)
     return _job_out(job)
 
 
 @router.post("/companies/{company_id}/recheck", response_model=JobOut)
 def recheck_company(company_id: int, db: Session = Depends(get_db)):
     company = _get_company(db, company_id)
-    job = q.enqueue_recheck(db, company)
+    job = _require_job(q.enqueue_recheck(db, company), company)
     return _job_out(job)
+
+
+@router.post("/companies/{company_id}/pause", response_model=CompanyOut)
+def pause_company(company_id: int, db: Session = Depends(get_db)):
+    """Hard-stop all work for a company until it is explicitly unpaused.
+
+    Stored on the company, so it outlives queue clears, worker restarts,
+    automatic retries and cron rechecks. Anything already queued or running for
+    it is cancelled -- a running job notices on its next recovery check and
+    aborts.
+    """
+    company = _get_company(db, company_id)
+    company.paused = True
+    stopped = 0
+    for j in db.scalars(
+        select(Job).where(
+            Job.company_id == company_id, Job.status.in_([JOB_QUEUED, JOB_RUNNING])
+        )
+    ):
+        j.status = JOB_CANCELLED
+        j.message = "cancelled — company paused"
+        stopped += 1
+    db.commit()
+    print(f"[api] paused {company.name} (cancelled {stopped} job(s))", flush=True)
+    return CompanyOut.model_validate(company)
+
+
+@router.post("/companies/{company_id}/unpause", response_model=CompanyOut)
+def unpause_company(company_id: int, db: Session = Depends(get_db)):
+    """Lift the hard stop. Does not queue anything by itself."""
+    company = _get_company(db, company_id)
+    company.paused = False
+    db.commit()
+    return CompanyOut.model_validate(company)
 
 
 @router.get("/companies/{company_id}/coverage")
@@ -325,9 +375,11 @@ def retry_failed(db: Session = Depends(get_db)):
             continue
         max_batches = _json.loads(j.params or "{}").get("max_batches")
         if j.kind == KIND_RECHECK:
-            q.enqueue_recheck(db, company, max_batches=max_batches)
+            again = q.enqueue_recheck(db, company, max_batches=max_batches)
         else:
-            q.enqueue_download(db, company, max_batches=max_batches)
+            again = q.enqueue_download(db, company, max_batches=max_batches)
+        if again is None:
+            continue  # paused company: leave it alone, a bulk retry must not wake it
         j.status = JOB_CANCELLED  # retire the old failed row
         j.message = "retried"
         requeued += 1
@@ -479,8 +531,12 @@ def recheck_all(db: Session = Depends(get_db)):
     """Queue a recheck for every saved company. Wire a Railway Cron service to
     POST this daily (or set ENABLE_INPROCESS_CRON=true to do it in-process)."""
     companies = list(db.scalars(select(Company).where(Company.saved.is_(True))))
-    jobs = [q.enqueue_recheck(db, c) for c in companies]
-    return {"queued": len(jobs), "job_ids": [j.id for j in jobs]}
+    # enqueue_recheck returns None for a paused company; the daily cron must not
+    # be the thing that quietly resurrects one.
+    jobs = [j for j in (q.enqueue_recheck(db, c) for c in companies) if j is not None]
+    skipped = len(companies) - len(jobs)
+    return {"queued": len(jobs), "skipped_paused": skipped,
+            "job_ids": [j.id for j in jobs]}
 
 
 # --------------------------------------------------------------------------- #

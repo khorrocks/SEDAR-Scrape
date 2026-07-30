@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from sqlalchemy import case, select
+from sqlalchemy import case, or_, select
 from sqlalchemy.orm import Session
 
 from .models import (
@@ -41,12 +41,16 @@ def enqueue_download(
     kind: str = KIND_DOWNLOAD,
     max_batches: int | None = None,
     attempt: int = 1,
-) -> Job:
+) -> Job | None:
     """Queue a download (or recheck) for a company, unless one is already active.
 
     ``max_batches`` caps how many 30-doc batches to pull (test mode); None means
     use the global default (``settings.default_max_batches``, also possibly None).
     """
+    # A paused company accepts no work at all -- not from the UI, the cron, or an
+    # automatic retry. Callers must handle None.
+    if company.paused:
+        return None
     existing = _active_job_for_company(db, company.id)
     if existing:
         return existing
@@ -63,7 +67,9 @@ def enqueue_download(
     return job
 
 
-def enqueue_recheck(db: Session, company: Company, max_batches: int | None = None) -> Job:
+def enqueue_recheck(
+    db: Session, company: Company, max_batches: int | None = None
+) -> Job | None:
     return enqueue_download(db, company, kind=KIND_RECHECK, max_batches=max_batches)
 
 
@@ -144,9 +150,16 @@ def claim_next_job(db: Session) -> Job | None:
         (Job.kind == KIND_ENUMERATE, 2),
         else_=1,
     )
+    # Never claim work for a paused company, even if the job predates the pause.
+    # Enforcing it here as well as at enqueue is what makes the pause survive
+    # anything already sitting in the queue.
     job = db.scalar(
         select(Job)
-        .where(Job.status == JOB_QUEUED)
+        .outerjoin(Company, Job.company_id == Company.id)
+        .where(
+            Job.status == JOB_QUEUED,
+            or_(Job.company_id.is_(None), Company.paused.is_(False)),
+        )
         .order_by(priority.asc(), Job.created_at.asc())
         .limit(1)
     )

@@ -74,6 +74,11 @@ class Company(Base):
 
     saved: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
+    # A hard, durable stop for this company. Held on the COMPANY rather than on a
+    # job so it survives queue clears, restarts, retries and cron rechecks --
+    # nothing will queue or claim work for it until it is explicitly unpaused.
+    paused: Mapped[bool] = mapped_column(Boolean, default=False)
+
     total_documents: Mapped[int] = mapped_column(Integer, default=0)
     # How many documents SEDAR+ reports for this company ("... of N results"),
     # the yardstick for completeness. is_complete is set when the indexed count
