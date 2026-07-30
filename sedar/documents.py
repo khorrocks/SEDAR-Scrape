@@ -272,6 +272,38 @@ def is_blocked(driver) -> bool:
     )
 
 
+# Tell a solvable challenge apart from a flat refusal. Radware serves both, and
+# treating them alike meant waiting 600s for a human to "solve" a page with no
+# challenge on it -- and alerting them to do so.
+_BLOCK_JS = r"""
+const t = (document.title || '').toLowerCase();
+const b = (document.body ? (document.body.innerText || '') : '').toLowerCase();
+const url = (location.href || '').toLowerCase();
+const challenge = !!document.querySelector(
+  'iframe[src*="captcha" i],iframe[src*="hcaptcha" i],iframe[src*="recaptcha" i],' +
+  '.g-recaptcha,.h-captcha,#captcha,[class*="captcha" i],[id*="captcha" i],' +
+  '[data-sitekey],input[name*="captcha" i]'
+);
+const wording = /solve (the )?captcha|i am not a robot|verify (you are|that you are) human|click to verify/.test(b);
+const blocked = url.includes('perfdrive') || t.includes('captcha') ||
+                t.includes('blocked') || /request unblock|access denied|you are a bot/.test(b);
+return {blocked: blocked, solvable: (challenge || wording),
+        title: document.title || '', snippet: b.replace(/\s+/g, ' ').slice(0, 240)};
+"""
+
+
+def block_state(driver) -> dict:
+    """``{blocked, solvable, title, snippet}`` for the current page.
+
+    ``solvable`` distinguishes a real challenge (something a human can complete)
+    from a flat "you are a bot" refusal, which only time or a different IP fixes.
+    """
+    try:
+        return driver.execute_script(_BLOCK_JS) or {}
+    except Exception:
+        return {}
+
+
 def _log(msg: str) -> None:
     print(f"[documents] {msg}", flush=True)
 

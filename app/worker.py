@@ -196,12 +196,31 @@ def _with_recovery(db, job, holder, do_work, count_fn):
             transient = captcha_blocked or throttled
 
             if captcha_blocked and settings.manual_captcha and holder._driver is not None:
-                # Manual solve: if a human clears the captcha in the live view,
-                # retry on the SAME browser (a reset discards the cleared session)
-                # without counting the pause against the attempt cap.
-                if _await_manual_solve(db, job, holder):
-                    attempts -= 1
-                    continue
+                # Only wait for a human when there is actually something to
+                # solve. Radware also serves a flat "you are a bot" refusal with
+                # no challenge on it; pausing 600s for that (and alerting someone
+                # to go solve it) just wasted time and cried wolf.
+                state = {}
+                try:
+                    state = sedar_docs.block_state(holder._driver)
+                except Exception:
+                    pass
+                if state.get("solvable"):
+                    if _await_manual_solve(db, job, holder):
+                        attempts -= 1
+                        continue
+                else:
+                    print(
+                        f"[worker] job {job.id} hard-blocked (no challenge to "
+                        f"solve): title={state.get('title')!r} "
+                        f"snippet={state.get('snippet')!r}",
+                        flush=True,
+                    )
+                    notify.slack(
+                        "SEDAR Scraper: hard-blocked by SEDAR+ (no CAPTCHA to "
+                        "solve). Waiting for the IP to cool down.",
+                        key="hard-block",
+                    )
             if progressed:
                 stalls = 0
             elif not transient:
