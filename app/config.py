@@ -45,6 +45,12 @@ class Settings:
     # On a Radware block, how long the worker waits before retrying (the block
     # is IP-based and usually clears after the IP cools down).
     radware_backoff_seconds: float = float(os.getenv("RADWARE_BACKOFF_SECONDS", "180"))
+    # SEDAR+ maintenance windows are the site being down for everyone and can run
+    # for a long time, so wait far longer than for a bot wall rather than
+    # spending retries against a page that cannot possibly work.
+    maintenance_backoff_seconds: float = float(
+        os.getenv("MAINTENANCE_BACKOFF_SECONDS", "900")
+    )
     # Max self-heal attempts for one company download before giving up.
     max_download_attempts: int = int(os.getenv("MAX_DOWNLOAD_ATTEMPTS", "15"))
     # Treat a company as in sync when it is within this many documents of the

@@ -292,6 +292,31 @@ return {blocked: blocked, solvable: (challenge || wording),
 """
 
 
+def is_maintenance(driver) -> bool:
+    """True when SEDAR+ is serving its scheduled-maintenance page.
+
+    Distinct from a bot wall: nothing is wrong with us, the site is simply down
+    for everyone, and it can last a while. Treating it as an ordinary failure
+    burned every automatic retry in minutes and left companies marked failed.
+    """
+    try:
+        title = (driver.title or "").lower()
+        body = (
+            driver.execute_script(
+                "return (document.body && document.body.innerText || '').slice(0, 400);"
+            )
+            or ""
+        ).lower()
+    except Exception:
+        return False
+    return (
+        "maintenance" in title
+        or "scheduled maintenance" in body
+        or "maintenance planifi" in body
+        or "temporarily unavailable" in body
+    )
+
+
 def block_state(driver) -> dict:
     """``{blocked, solvable, title, snippet}`` for the current page.
 

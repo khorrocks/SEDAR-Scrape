@@ -66,6 +66,16 @@ def _sleep_alive(seconds: float) -> None:
         _beat()
 
 
+def _driver_in_maintenance(holder) -> bool:
+    d = holder._driver
+    if d is None:
+        return False
+    try:
+        return sedar_docs.is_maintenance(d)
+    except Exception:
+        return False
+
+
 def _driver_is_blocked(holder) -> bool:
     """True if the current browser is sitting on a Radware/captcha page."""
     d = holder._driver
@@ -193,8 +203,30 @@ def _with_recovery(db, job, holder, do_work, count_fn):
             # stall, so the job patiently retries until the IP cools instead of
             # dying after 3 tries. Only a real captcha page gets the manual solve.
             throttled = "produced no file" in low
-            transient = captcha_blocked or throttled
+            # The site being down for everyone is not our failure and cannot be
+            # retried away. It must not consume attempts or stalls, or a
+            # maintenance window burns every retry and fails the company.
+            maintenance = "maintenance" in low or _driver_in_maintenance(holder)
+            transient = captcha_blocked or throttled or maintenance
 
+            if maintenance:
+                # Don't spend an attempt on a site that is down for everyone.
+                attempts -= 1
+                notify.slack(
+                    "SEDAR Scraper: SEDAR+ is in scheduled maintenance. "
+                    "Waiting for it to come back; no action needed.",
+                    key="maintenance",
+                )
+                print(
+                    f"[worker] job {job.id} SEDAR+ in maintenance — waiting "
+                    f"{int(settings.maintenance_backoff_seconds)}s",
+                    flush=True,
+                )
+                job.message = "SEDAR+ in scheduled maintenance — waiting…"
+                db.commit()
+                holder.reset()
+                _sleep_alive(settings.maintenance_backoff_seconds)
+                continue
             if captcha_blocked and settings.manual_captcha and holder._driver is not None:
                 # Only wait for a human when there is actually something to
                 # solve. Radware also serves a flat "you are a bot" refusal with
@@ -581,7 +613,10 @@ def run_forever() -> None:
                 err += diag
                 low = (err + diag).lower()
                 walled = (
-                    "perfdrive" in low or "radware" in low or "captcha" in low
+                    "perfdrive" in low
+                    or "radware" in low
+                    or "captcha" in low
+                    or "maintenance" in low
                 )
                 print(f"[worker] job {job_id} FAILED: {err}")
                 traceback.print_exc()
