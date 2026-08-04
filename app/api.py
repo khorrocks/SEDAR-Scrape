@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
@@ -32,6 +32,7 @@ from .models import (
 from . import queue as q
 from .schemas import (
     AddCompanyRequest,
+    BulkAddRequest,
     CompanyOut,
     DocumentOut,
     EnumerateRequest,
@@ -80,6 +81,114 @@ def search_companies(
     # Saved first, then alphabetical.
     stmt = stmt.order_by(Company.saved.desc(), Company.name.asc()).limit(limit)
     return list(db.scalars(stmt))
+
+
+def _csv_response(rows: list[list], header: list[str], filename: str):
+    """Stream rows as CSV. Values are quoted defensively -- company names contain
+    commas, slashes and newlines, and the submitted date is a two-line cell."""
+    import csv as _csv
+    import io as _io
+
+    buf = _io.StringIO()
+    w = _csv.writer(buf, quoting=_csv.QUOTE_ALL)
+    w.writerow(header)
+    for r in rows:
+        w.writerow(["" if v is None else str(v).replace("\r\n", "\n") for v in r])
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/catalog/export")
+def export_catalog(
+    fmt: str = Query("csv", pattern="^(csv|json)$"),
+    db: Session = Depends(get_db),
+):
+    """The whole enumerated issuer catalog: the name -> SEDAR number join table.
+
+    This lives in the app's own database (not D1/KV), which is why it isn't
+    findable from outside. SEDAR+ records jurisdiction, not listing venue, so
+    there is no exchange column here -- exchange/ticker are supplied by us per
+    company, not by SEDAR.
+    """
+    stmt = select(Company).order_by(Company.name.asc())
+    companies = list(db.scalars(stmt))
+    if fmt == "json":
+        return [
+            {
+                "sedar_number": c.number,
+                "name": c.name,
+                "jurisdiction": c.jurisdiction,
+                "profile_type": c.type,
+                "in_default": c.in_default,
+                "cease_trade_order": c.cease_trade_order,
+            }
+            for c in companies
+        ]
+    return _csv_response(
+        [
+            [c.number, c.name, c.jurisdiction, c.type, c.in_default, c.cease_trade_order]
+            for c in companies
+        ],
+        ["sedar_number", "name", "jurisdiction", "profile_type",
+         "in_default", "cease_trade_order"],
+        "sedar_catalog.csv",
+    )
+
+
+@router.get("/export/documents")
+def export_documents(
+    company_id: int | None = Query(None, description="omit for every company"),
+    fmt: str = Query("csv", pattern="^(csv|json)$"),
+    db: Session = Depends(get_db),
+):
+    """Every indexed document with its filing date, hash and archive location.
+
+    The submitted date is scraped and stored here but never written to R2 -- the
+    archives contain PDFs only -- so a downstream ingest reading R2 alone has no
+    filing_date to bind. This exposes it for the documents already held, with no
+    re-download. NOTE: `submitted` is the rendered SEDAR+ cell, typically two
+    lines ("02 Dec 2024 17:49 EST" + a long form); parse, don't assume ISO.
+    """
+    stmt = (
+        select(Document, Company)
+        .join(Company, Document.company_id == Company.id)
+        .order_by(Document.company_id.asc(), Document.id.asc())
+    )
+    if company_id is not None:
+        stmt = stmt.where(Document.company_id == company_id)
+    pairs = list(db.execute(stmt))
+    if fmt == "json":
+        return [
+            {
+                "sedar_number": c.number,
+                "company": c.name,
+                "folder_slug": c.folder_slug,
+                "title": d.title,
+                "submitted": d.submitted,
+                "jurisdiction": d.jurisdiction,
+                "file_size": d.file_size,
+                "archive": d.batch_zip,
+                "archive_member": d.archive_member,
+                "sha256": d.content_sha256,
+                "downloaded_at": d.downloaded_at.isoformat() if d.downloaded_at else None,
+            }
+            for d, c in pairs
+        ]
+    return _csv_response(
+        [
+            [c.number, c.name, c.folder_slug, d.title, d.submitted, d.jurisdiction,
+             d.file_size, d.batch_zip, d.archive_member, d.content_sha256,
+             d.downloaded_at.isoformat() if d.downloaded_at else None]
+            for d, c in pairs
+        ],
+        ["sedar_number", "company", "folder_slug", "title", "submitted",
+         "jurisdiction", "file_size", "archive", "archive_member", "sha256",
+         "downloaded_at"],
+        "sedar_documents.csv",
+    )
 
 
 @router.get("/catalog/stats")
@@ -159,6 +268,49 @@ def add_company(req: AddCompanyRequest, db: Session = Depends(get_db)):
             )
         )
     return CompanyOut.model_validate(company)
+
+
+@router.post("/companies/bulk")
+def add_companies_bulk(req: BulkAddRequest, db: Session = Depends(get_db)):
+    """Register many companies in one call. Upserts on SEDAR number.
+
+    Downloads are NOT queued by default: adding a large watchlist and starting a
+    thousand browser jobs are separate decisions, and one worker drives one
+    browser serially. Pass download=true to queue as well. Paused companies are
+    reported as skipped rather than silently woken.
+    """
+    added, updated, queued, skipped = 0, 0, 0, []
+    for item in req.companies:
+        number = (item.number or "").strip()
+        if not number:
+            skipped.append({"number": item.number, "reason": "missing SEDAR number"})
+            continue
+        company = db.scalar(select(Company).where(Company.number == number))
+        if company is None:
+            company = Company(
+                number=number, name=(item.name or number).strip(), type="(added)"
+            )
+            db.add(company)
+            added += 1
+        else:
+            if item.name:
+                company.name = item.name.strip()
+            updated += 1
+        if item.exchange is not None:
+            company.exchange = item.exchange.strip() or None
+        if item.ticker is not None:
+            company.ticker = item.ticker.strip() or None
+        company.saved = True
+        db.flush()
+        if req.download:
+            job = q.enqueue_download(db, company, max_batches=item.max_batches)
+            if job is None:
+                skipped.append({"number": number, "reason": "company is paused"})
+            else:
+                queued += 1
+    db.commit()
+    return {"added": added, "updated": updated, "queued": queued,
+            "skipped": skipped, "total": len(req.companies)}
 
 
 @router.get("/saved", response_model=list[CompanyOut])
@@ -681,3 +833,4 @@ def admin_reset(
         "deleted": {"documents": n_docs, "jobs": n_jobs, "companies": n_companies},
         "note": "R2 objects were not touched",
     }
+

@@ -586,6 +586,11 @@ def enumerate_catalog(db: Session, driver, profile_type: str | None = "Company",
                 existing.name = r.get("name") or existing.name
                 existing.jurisdiction = r.get("jurisdiction") or existing.jurisdiction
                 existing.type = r.get("type") or existing.type
+                # Regulatory status can legitimately go from set back to blank
+                # (a default cured, an order revoked), so assign rather than
+                # keeping the old value -- that transition is the signal.
+                existing.in_default = r.get("in_default") or None
+                existing.cease_trade_order = r.get("cease_trade_order") or None
             else:
                 db.add(
                     Company(
@@ -593,6 +598,8 @@ def enumerate_catalog(db: Session, driver, profile_type: str | None = "Company",
                         name=r.get("name", ""),
                         jurisdiction=r.get("jurisdiction"),
                         type=r.get("type"),
+                        in_default=r.get("in_default") or None,
+                        cease_trade_order=r.get("cease_trade_order") or None,
                     )
                 )
         db.commit()  # checkpoint after every page

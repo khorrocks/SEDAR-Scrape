@@ -111,6 +111,10 @@ def _column_index(driver) -> dict[str, int]:
             idx["jurisdiction"] = i
         elif t.startswith("type"):
             idx["type"] = i
+        elif "in default" in t:
+            idx["in_default"] = i
+        elif "cease trade" in t:
+            idx["cease_trade_order"] = i
     return idx
 
 
@@ -136,14 +140,18 @@ def scrape_page(driver, col: dict[str, int] | None = None) -> list[dict]:
                 number = cells[col["number"]].text.strip()
                 if not name or not number:
                     continue
+                def _cell(key: str, cells=cells) -> str:
+                    i = col.get(key)
+                    return cells[i].text.strip() if i is not None and len(cells) > i else ""
+
                 out.append(
                     {
                         "name": name,
                         "number": number,
-                        "jurisdiction": cells[col["jurisdiction"]].text.strip()
-                        if "jurisdiction" in col and len(cells) > col["jurisdiction"] else "",
-                        "type": cells[col["type"]].text.strip()
-                        if "type" in col and len(cells) > col["type"] else "",
+                        "jurisdiction": _cell("jurisdiction"),
+                        "type": _cell("type"),
+                        "in_default": _cell("in_default"),
+                        "cease_trade_order": _cell("cease_trade_order"),
                     }
                 )
             return out

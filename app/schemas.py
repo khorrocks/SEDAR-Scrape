@@ -76,6 +76,14 @@ class SaveRequest(BaseModel):
     max_batches: int | None = None
 
 
+class BulkAddRequest(BaseModel):
+    # Adding 1,300 companies one form submission at a time isn't viable; this
+    # takes the whole list in one call.
+    companies: list["AddCompanyRequest"]
+    # Save + queue downloads (default), or just register them for later.
+    download: bool = False
+
+
 class AddCompanyRequest(BaseModel):
     # SEDAR issuer number (e.g. "000003771"). The download drives off this via
     # the "Profile name or number" lookup, so a company need not be enumerated.
@@ -87,3 +95,6 @@ class AddCompanyRequest(BaseModel):
     download: bool = True
     # Test mode: cap the download to this many 30-doc batches (None = all).
     max_batches: int | None = None
+
+
+BulkAddRequest.model_rebuild()

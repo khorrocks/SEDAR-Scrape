@@ -63,9 +63,16 @@ class Company(Base):
     type: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Exchange + ticker (e.g. "TSXV" + "SPRQ") together name the company's R2
-    # folder: <prefix>/<exchange>-<ticker>/raw-data/. Supplied by the user.
+    # folder: <prefix>/<exchange>-<ticker>/raw-data/. Supplied by the user --
+    # SEDAR+ records jurisdiction, never listing venue.
     exchange: Mapped[str | None] = mapped_column(String(16), nullable=True)
     ticker: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    # Regulatory status carried by the Reporting Issuers List alongside the
+    # profile number. Not metadata for an alerting product: a cease trade order
+    # landing on a watched name is itself the event.
+    in_default: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    cease_trade_order: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     # The opaque profile.html?id=<hash> URL, captured via the "Generate URL"
     # action when we first download. May be null if we drive by number instead.

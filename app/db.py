@@ -42,6 +42,8 @@ _ADDED_COLUMNS = {
         "is_complete": "BOOLEAN DEFAULT 0",
         "coverage_checked_at": "TIMESTAMP",
         "paused": "BOOLEAN DEFAULT 0",
+        "in_default": "VARCHAR(32)",
+        "cease_trade_order": "VARCHAR(32)",
     },
     "jobs": {
         "blocked": "BOOLEAN DEFAULT 0",
