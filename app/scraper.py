@@ -577,6 +577,17 @@ def resolve_numbers(db: Session, driver, company_ids: list[int],
         score = (hit or {}).get("score") or 0.0
         sedar_name = (hit or {}).get("english_name") or ""
 
+        if hit and hit.get("filter_failed"):
+            # The name filter did not take, so the rows on screen are the
+            # unfiltered list. Abort the whole run: every remaining lookup would
+            # score against the same wrong candidates, and quietly writing those
+            # numbers is the worst outcome available.
+            raise RuntimeError(
+                "the issuers-list name filter stopped working (results did not "
+                f"change when searching {company.name!r}) -- aborting before any "
+                "wrong numbers are written"
+            )
+
         if hit and number and score >= floor:
             clash = db.scalar(select(Company).where(Company.number == number,
                                                     Company.id != company.id))

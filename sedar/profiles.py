@@ -27,6 +27,7 @@ import time
 from difflib import SequenceMatcher
 
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 
 # A known, stable profile used purely to bootstrap a Radware-cleared session.
 # Override with SEDAR_BOOTSTRAP_PROFILE_ID if this profile ever goes away.
@@ -162,6 +163,40 @@ def scrape_page(driver, col: dict[str, int] | None = None) -> list[dict]:
     return out
 
 
+def _filter_box(driver):
+    """The "Filter by name or profile number" input, or None."""
+    for el in driver.find_elements(By.TAG_NAME, "input"):
+        try:
+            if not el.is_displayed():
+                continue
+            hint = " ".join([
+                el.get_attribute("placeholder") or "",
+                el.get_attribute("aria-label") or "",
+                el.get_attribute("name") or "",
+            ]).lower()
+        except Exception:
+            continue
+        if "filter" in hint and ("name" in hint or "profile" in hint):
+            return el
+    return None
+
+
+def _table_signature(driver) -> str:
+    """Cheap fingerprint of the results table: row count + first row's text.
+
+    Used to tell whether typing into the filter actually changed anything, which
+    a fixed sleep cannot.
+    """
+    try:
+        return driver.execute_script(
+            """const rs = document.querySelectorAll('table tbody tr');
+               if (!rs.length) return '0|';
+               return rs.length + '|' + (rs[0].innerText || '').slice(0, 120);"""
+        ) or ""
+    except Exception:
+        return ""
+
+
 def english_legal_name(raw: str) -> str:
     """The "Full legal company name in English" out of a SEDAR name cell.
 
@@ -217,28 +252,44 @@ def find_number_by_name(driver, name: str, settle: float = 6.0) -> dict | None:
     usually right -- but the score and rank come back with it so the caller can
     decide, and so a weak match can be flagged rather than trusted silently.
     """
-    typed = driver.execute_script(
-        """const v = arguments[0];
-           const el = [...document.querySelectorAll('input')].find(i => {
-             const s = ((i.getAttribute('placeholder') || '') + ' ' +
-                        (i.getAttribute('aria-label') || '')).toLowerCase();
-             return s.includes('filter') && (s.includes('name') || s.includes('profile'));
-           });
-           if (!el) return false;
-           el.focus(); el.value = v;
-           el.dispatchEvent(new Event('input', {bubbles: true}));
-           el.dispatchEvent(new Event('change', {bubbles: true}));
-           el.dispatchEvent(new KeyboardEvent('keyup', {bubbles: true, key: 'Enter'}));
-           return true;""",
-        name,
-    )
-    if not typed:
+    before = _table_signature(driver)
+
+    box = _filter_box(driver)
+    if box is None:
         return None
-    time.sleep(settle)
+    # Real keystrokes, not el.value = x. Assigning the property updates the DOM
+    # without driving the framework binding behind the filter, so the table
+    # silently kept showing the unfiltered first page -- and every lookup then
+    # "matched" against whatever issuer happened to sort first.
+    try:
+        box.clear()
+        box.send_keys(name)
+        box.send_keys(Keys.ENTER)
+    except Exception:
+        return None
+
+    # Wait for the table to actually change rather than sleeping blind.
+    deadline = time.time() + settle
+    changed = False
+    while time.time() < deadline:
+        time.sleep(0.5)
+        if _table_signature(driver) != before:
+            changed = True
+            break
+
     col = _column_index(driver)
     rows = scrape_page(driver, col)
     if not rows:
         return None
+
+    # If the table never moved, the filter did not take. Returning these rows
+    # would be worse than returning nothing: they are the unfiltered list, and a
+    # confident-looking wrong number files one company's documents under
+    # another. The exception is a genuinely strong hit, which cannot be a
+    # coincidence of ordering.
+    if not changed and max(score_name(name, r.get("name", "")) for r in rows) < 0.9:
+        return {"filter_failed": True, "number": "", "score": 0.0,
+                "candidates": len(rows)}
 
     # Rank every candidate; ties keep SEDAR's own ordering, so an equal-scoring
     # first result wins -- that is the one the filter box considered best.
