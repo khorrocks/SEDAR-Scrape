@@ -136,91 +136,6 @@ function coverageLabel(c) {
     : `<span class="cov warn">${held}/${c.reported_total} — ${missing} missing</span>`;
 }
 
-async function loadSaved() {
-  let rows = [];
-  try { rows = await api("/saved"); } catch {}
-  const box = el("saved");
-  if (!rows.length) { box.innerHTML = `<div class="empty">No saved companies yet. Add one above, or save companies from the manager below.</div>`; return; }
-  box.innerHTML = rows.map((c) => `
-    <div class="card">
-      <div class="card-main">
-        <div class="name" data-id="${c.id}" data-name="${esc(c.name)}">${esc(c.name)}</div>
-        <div class="sub">${esc(c.type || "")} · ${esc(c.jurisdiction || "")} · #${esc(c.number)}</div>
-        <div class="docs">${coverageLabel(c)}</div>
-        <div class="slug" data-slug="${c.id}">
-          ${c.folder_slug
-            ? `<span class="slug-tag">${esc(c.folder_slug)}/</span>`
-            : `<span class="slug-warn">⚠ no exchange/ticker set</span>`}
-          <button class="link-btn" data-edit="${c.id}">edit</button>
-        </div>
-        <div class="slug-edit" data-editrow="${c.id}" hidden>
-          <input class="mini" data-ex="${c.id}" placeholder="exchange" value="${esc(c.exchange || "")}" />
-          <input class="mini" data-tk="${c.id}" placeholder="ticker" value="${esc(c.ticker || "")}" />
-          <button class="small" data-savemeta="${c.id}">save</button>
-          <button class="link-btn" data-canceledit="${c.id}">cancel</button>
-        </div>
-      </div>
-      <div class="card-actions">
-        <button class="ghost small" data-download="${c.id}" ${c.paused ? "disabled" : ""}>Download</button>
-        <button class="ghost small" data-recheck="${c.id}" ${c.paused ? "disabled" : ""}>Check new</button>
-        <button class="ghost small ${c.paused ? "unpause" : ""}" data-pause="${c.id}" data-on="${c.paused ? 1 : 0}">
-          ${c.paused ? "▶ Unpause" : "⏸ Pause"}
-        </button>
-      </div>
-    </div>`).join("");
-  box.querySelectorAll(".name").forEach((n) =>
-    n.addEventListener("click", () => openDrawer(+n.dataset.id, n.dataset.name)));
-  box.querySelectorAll("[data-recheck]").forEach((b) =>
-    b.addEventListener("click", async () => {
-      await api(`/companies/${b.dataset.recheck}/recheck`, { method: "POST" });
-      loadQueue();
-    }));
-  // Hard pause/unpause. The flag lives on the company, so it survives queue
-  // clears, restarts and cron rechecks until explicitly lifted.
-  box.querySelectorAll("[data-pause]").forEach((b) =>
-    b.addEventListener("click", async () => {
-      const on = b.dataset.on === "1";
-      b.disabled = true;
-      try {
-        await api(`/companies/${b.dataset.pause}/${on ? "unpause" : "pause"}`, { method: "POST" });
-      } catch (e) { alert("Could not change pause: " + e.message); }
-      loadSaved(); loadQueue();
-    }));
-  // Queue a full download for this company without opening the drawer, so an
-  // unfinished company can be put back in line in one click.
-  box.querySelectorAll("[data-download]").forEach((b) =>
-    b.addEventListener("click", async () => {
-      b.disabled = true;
-      try { await api(`/companies/${b.dataset.download}/download`, { method: "POST" }); }
-      catch (e) { alert("Could not queue: " + e.message); }
-      b.disabled = false;
-      loadQueue();
-    }));
-  const toggleEdit = (id, editing) => {
-    box.querySelector(`[data-slug="${id}"]`).hidden = editing;
-    box.querySelector(`[data-editrow="${id}"]`).hidden = !editing;
-  };
-  box.querySelectorAll("[data-edit]").forEach((b) =>
-    b.addEventListener("click", () => toggleEdit(b.dataset.edit, true)));
-  box.querySelectorAll("[data-canceledit]").forEach((b) =>
-    b.addEventListener("click", () => toggleEdit(b.dataset.canceledit, false)));
-  box.querySelectorAll("[data-savemeta]").forEach((b) =>
-    b.addEventListener("click", async () => {
-      const id = b.dataset.savemeta;
-      const exchange = box.querySelector(`[data-ex="${id}"]`).value.trim();
-      const ticker = box.querySelector(`[data-tk="${id}"]`).value.trim();
-      try {
-        // download:false -> just persist exchange/ticker without queueing a job.
-        await api(`/companies/${id}/save`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ download: false, exchange, ticker }),
-        });
-      } catch (e) { alert("Could not save: " + e.message); return; }
-      loadSaved();
-    }));
-}
-
 // Drop the INCOMPLETE caveat from a finished job that is within the sync
 // tolerance, so a company that is effectively in sync reads as plainly done.
 // Also covers jobs recorded before the tolerance existed.
@@ -335,23 +250,28 @@ async function loadManager() {
     <div class="mgr-row mgr-head">
       <span><input type="checkbox" id="mgr-all" /></span>
       <span>Name</span><span>SEDAR #</span><span>Exch</span><span>Ticker</span>
-      <span>Held</span><span>Status</span><span></span>
+      <span>Coverage</span><span>Actions</span><span></span>
     </div>` + data.companies.map((c) => {
       const flags = [];
-      if (c.paused) flags.push(`<span class="tag">paused</span>`);
       if (c.saved) flags.push(`<span class="tag saved">saved</span>`);
-      const held = c.reported_total
-        ? `${c.total_documents}/${c.reported_total}` : (c.total_documents || "");
       return `<div class="mgr-row">
         <span><input type="checkbox" data-sel="${c.id}" ${MGR.selected.has(c.id) ? "checked" : ""} /></span>
-        <span class="nm" title="${esc(c.name)}">${esc(c.name)}</span>
-        <span><input class="num-edit ${c.number ? "" : "warn-cell"}" data-num="${c.id}"
+        <span class="nm" data-open="${c.id}" data-name="${esc(c.name)}"
+              title="${esc(c.name)}">${esc(c.name)}</span>
+        <span><input class="cell-edit ${c.number ? "" : "warn-cell"}" data-num="${c.id}"
                      value="${esc(c.number || "")}" placeholder="— none —"
                      inputmode="numeric" title="Type a SEDAR number and press Enter" /></span>
-        <span>${esc(c.exchange || "")}</span>
-        <span>${esc(c.ticker || "")}</span>
-        <span>${held}</span>
-        <span>${flags.join(" ")}</span>
+        <span><input class="cell-edit" data-ex="${c.id}" value="${esc(c.exchange || "")}"
+                     placeholder="—" title="Exchange" /></span>
+        <span><input class="cell-edit" data-tk="${c.id}" value="${esc(c.ticker || "")}"
+                     placeholder="—" title="Ticker" /></span>
+        <span class="cov-cell">${coverageLabel(c)} ${flags.join(" ")}</span>
+        <span class="row-actions">
+          <button class="ghost tiny" data-download="${c.id}" ${c.paused ? "disabled" : ""}>Download</button>
+          <button class="ghost tiny" data-recheck="${c.id}" ${c.paused ? "disabled" : ""}>Check new</button>
+          <button class="ghost tiny ${c.paused ? "unpause" : ""}" data-pause="${c.id}"
+                  data-on="${c.paused ? 1 : 0}">${c.paused ? "▶ Unpause" : "⏸ Pause"}</button>
+        </span>
         <span><button class="link-danger" data-del="${c.id}"
                       data-name="${esc(c.name)}" data-held="${c.total_documents || 0}"
                       title="Delete this company">✕</button></span>
@@ -365,30 +285,65 @@ async function loadManager() {
       paintBulk();
     }));
 
-  // Inline SEDAR number entry: commit on Enter or blur, ignore a no-op edit.
-  el("mgr-table").querySelectorAll("[data-num]").forEach((inp) => {
-    const original = inp.value;
-    const commit = async () => {
-      const val = inp.value.trim();
-      if (val === original) return;
-      try {
-        await api("/companies/bulk-update", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ids: [+inp.dataset.num], set: { number: val } }),
-        });
-      } catch (e) {
-        alert("Could not set the SEDAR number: " + e.message);
-        inp.value = original;
-        return;
-      }
-      loadManager(); loadSaved(); loadStats();
-    };
-    inp.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); inp.blur(); }
-      if (e.key === "Escape") { inp.value = original; inp.blur(); }
+  // Inline editing for number / exchange / ticker: commit on Enter or blur,
+  // revert on Escape, ignore a no-op edit.
+  [["data-num", "num", "number"], ["data-ex", "ex", "exchange"],
+   ["data-tk", "tk", "ticker"]].forEach(([attr, key, field]) => {
+    el("mgr-table").querySelectorAll(`[${attr}]`).forEach((inp) => {
+      const original = inp.value;
+      const commit = async () => {
+        const val = inp.value.trim();
+        if (val === original) return;
+        try {
+          await api("/companies/bulk-update", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ids: [+inp.dataset[key]], set: { [field]: val } }),
+          });
+        } catch (e) {
+          alert(`Could not set ${field}: ` + e.message);
+          inp.value = original;
+          return;
+        }
+        loadManager(); loadStats();
+      };
+      inp.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); inp.blur(); }
+        if (e.key === "Escape") { inp.value = original; inp.blur(); }
+      });
+      inp.addEventListener("blur", commit);
     });
-    inp.addEventListener("blur", commit);
   });
+
+  el("mgr-table").querySelectorAll("[data-open]").forEach((n) =>
+    n.addEventListener("click", () => openDrawer(+n.dataset.open, n.dataset.name)));
+
+  el("mgr-table").querySelectorAll("[data-download]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      b.disabled = true;
+      try { await api(`/companies/${b.dataset.download}/download`, { method: "POST" }); }
+      catch (e) { alert("Could not queue: " + e.message); b.disabled = false; return; }
+      loadQueue();
+    }));
+
+  el("mgr-table").querySelectorAll("[data-recheck]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      b.disabled = true;
+      try { await api(`/companies/${b.dataset.recheck}/recheck`, { method: "POST" }); }
+      catch (e) { alert("Could not queue: " + e.message); b.disabled = false; return; }
+      loadQueue();
+    }));
+
+  // Hard pause/unpause. The flag lives on the company, so it survives queue
+  // clears, restarts and cron rechecks until explicitly lifted.
+  el("mgr-table").querySelectorAll("[data-pause]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const on = b.dataset.on === "1";
+      b.disabled = true;
+      try {
+        await api(`/companies/${b.dataset.pause}/${on ? "unpause" : "pause"}`, { method: "POST" });
+      } catch (e) { alert("Could not change pause: " + e.message); }
+      loadManager(); loadQueue();
+    }));
 
   el("mgr-table").querySelectorAll("[data-del]").forEach((b) =>
     b.addEventListener("click", async () => {
@@ -407,7 +362,7 @@ async function loadManager() {
         }
       } catch (e) { alert("Could not delete: " + e.message); return; }
       MGR.selected.delete(+b.dataset.del);
-      loadManager(); loadSaved(); loadStats();
+      loadManager(); loadStats();
     }));
   const all = el("mgr-all");
   if (all) all.addEventListener("change", () => {
@@ -451,7 +406,7 @@ async function bulkAction(kind) {
     }
   } catch (e) { alert("Bulk action failed: " + e.message); return; }
   MGR.selected.clear();
-  loadManager(); loadSaved(); loadQueue();
+  loadManager(); loadQueue();
 }
 
 document.querySelectorAll("[data-bulk]").forEach((b) =>
@@ -571,7 +526,7 @@ el("import-run").addEventListener("click", async () => {
     el("import-status").textContent =
       `${r.created} created, ${r.matched} matched, ${r.skipped.length} skipped` +
       (r.missing_numbers ? `, ${r.missing_numbers} still missing a SEDAR #` : "");
-    loadManager(); loadSaved();
+    loadManager();
   } catch (e) { el("import-status").textContent = "failed: " + e.message; }
   el("import-run").disabled = false;
 });
@@ -677,8 +632,9 @@ el("logout-btn").addEventListener("click", async () => {
 })();
 
 // --------------------------------------------------------------------------
-function refreshAll() { loadStats(); loadSaved(); loadQueue(); loadManager(); }
+function refreshAll() { loadStats(); loadQueue(); loadManager(); }
 refreshAll();
 loadR2();
 setInterval(() => { loadQueue(); loadStats(); }, 3000);
-setInterval(loadSaved, 8000);
+// The manager now carries coverage + actions, so it is what needs refreshing.
+setInterval(loadManager, 8000);
