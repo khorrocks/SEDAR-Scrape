@@ -534,6 +534,51 @@ def _advance_or_raise_if_blocked(driver, settle: float, verify: bool = False) ->
     return False
 
 
+def resolve_numbers(db: Session, driver, company_ids: list[int],
+                    progress: ProgressFn | None = None) -> dict:
+    """Fill in missing SEDAR numbers by looking each company up by name.
+
+    Only an exact normalised name match is accepted. A near-miss is recorded as
+    a suggestion for a human instead of being written: attaching the wrong
+    profile number silently files another company's documents under this one,
+    which is worse than leaving the field empty.
+    """
+    profiles.open_reporting_issuers(driver)
+    resolved, suggested, missed = 0, [], []
+    for i, cid in enumerate(company_ids, start=1):
+        company = db.get(Company, cid)
+        if company is None or (company.number or "").strip():
+            continue
+        hit = None
+        try:
+            hit = profiles.find_number_by_name(driver, company.name)
+        except Exception as exc:
+            print(f"[resolve] {company.name}: {exc}", flush=True)
+        number = (hit or {}).get("number", "").strip()
+        if hit and number and hit.get("match") == "exact":
+            clash = db.scalar(select(Company).where(Company.number == number,
+                                                    Company.id != company.id))
+            if clash is not None:
+                suggested.append({"id": cid, "name": company.name, "number": number,
+                                  "why": f"already used by {clash.name}"})
+            else:
+                company.number = number
+                company.jurisdiction = hit.get("jurisdiction") or company.jurisdiction
+                company.type = hit.get("type") or company.type
+                resolved += 1
+                db.commit()
+        elif hit and number:
+            suggested.append({"id": cid, "name": company.name, "number": number,
+                              "why": f"name differs: SEDAR has {hit.get('name')!r}"})
+        else:
+            missed.append({"id": cid, "name": company.name})
+        if progress:
+            progress(i, resolved, len(company_ids),
+                     f"{i}/{len(company_ids)} checked, {resolved} resolved")
+        time.sleep(2)
+    return {"resolved": resolved, "needs_review": suggested, "not_found": missed}
+
+
 def enumerate_catalog(db: Session, driver, profile_type: str | None = "Company",
                       max_pages: int | None = None, progress: ProgressFn | None = None,
                       should_yield: Callable[[], bool] | None = None,

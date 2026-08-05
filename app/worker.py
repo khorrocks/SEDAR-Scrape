@@ -15,6 +15,7 @@ On a headless server it must run under Xvfb so real (non-headless) Chrome works:
 from __future__ import annotations
 
 import json
+from json import dumps as _json_dumps
 import os
 import signal
 import threading
@@ -35,6 +36,7 @@ from .models import (
     KIND_ENUMERATE,
     KIND_PROBE,
     KIND_RECHECK,
+    KIND_RESOLVE,
     Company,
     Document,
     Job,
@@ -475,6 +477,26 @@ def _run_job(job_id: int, holder: _DriverHolder) -> None:
         if job.kind == KIND_PROBE:
             params = json.loads(job.params or "{}")
             job.message = _probe_urls(holder.get(), params)
+            db.commit()
+            return
+
+        if job.kind == KIND_RESOLVE:
+            params = json.loads(job.params or "{}")
+            ids = params.get("company_ids") or []
+            result = _with_recovery(
+                db, job, holder,
+                lambda d: scraper.resolve_numbers(db, d, ids, progress=progress),
+                count_fn=lambda: 0,
+            )
+            review = result.get("needs_review") or []
+            missed = result.get("not_found") or []
+            job.message = (
+                f"{result.get('resolved', 0)} of {len(ids)} resolved; "
+                f"{len(review)} need review; {len(missed)} not found"
+            )
+            # Keep the detail queryable -- a near-miss is exactly what a human
+            # has to adjudicate, and it is useless if it only lives in a log.
+            job.error = _json_dumps({"needs_review": review, "not_found": missed})[:4000]
             db.commit()
             return
 

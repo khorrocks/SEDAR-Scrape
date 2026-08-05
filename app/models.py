@@ -46,6 +46,7 @@ KIND_DOWNLOAD = "download_company"   # full download, all docs in batches of 30
 KIND_RECHECK = "recheck_company"     # cron/manual: fetch only new docs
 KIND_ENUMERATE = "enumerate_catalog" # populate the companies catalog
 KIND_PROBE = "probe"                 # debug: load URLs and report what loaded
+KIND_RESOLVE = "resolve_numbers"     # look up missing SEDAR numbers by name
 
 
 class Company(Base):

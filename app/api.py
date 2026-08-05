@@ -3,11 +3,12 @@ it never launches Chrome (that is the worker's job)."""
 
 from __future__ import annotations
 
+import json as _json
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from fastapi.responses import FileResponse, RedirectResponse
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from . import r2
@@ -24,6 +25,7 @@ from .models import (
     KIND_DOWNLOAD,
     KIND_ENUMERATE,
     KIND_RECHECK,
+    KIND_RESOLVE,
     Batch,
     Company,
     Document,
@@ -189,6 +191,162 @@ def export_documents(
          "downloaded_at"],
         "sedar_documents.csv",
     )
+
+
+@router.get("/companies")
+def list_companies(
+    q_: str = Query("", alias="q"),
+    filter_: str = Query("all", alias="filter",
+                         pattern="^(all|saved|unsaved|no_number|no_slug|paused|flagged)$"),
+    limit: int = Query(100, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+):
+    """Paginated catalog listing for the manager page."""
+    stmt = select(Company)
+    term = q_.strip()
+    if term:
+        like = f"%{term}%"
+        stmt = stmt.where(or_(Company.name.ilike(like), Company.number.ilike(like),
+                              Company.ticker.ilike(like)))
+    if filter_ == "saved":
+        stmt = stmt.where(Company.saved.is_(True))
+    elif filter_ == "unsaved":
+        stmt = stmt.where(Company.saved.is_(False))
+    elif filter_ == "no_number":
+        stmt = stmt.where(or_(Company.number.is_(None), Company.number == ""))
+    elif filter_ == "no_slug":
+        stmt = stmt.where(or_(Company.exchange.is_(None), Company.exchange == "",
+                              Company.ticker.is_(None), Company.ticker == ""))
+    elif filter_ == "paused":
+        stmt = stmt.where(Company.paused.is_(True))
+    elif filter_ == "flagged":
+        stmt = stmt.where(or_(
+            and_(Company.in_default.is_not(None), Company.in_default != "",
+                 Company.in_default != "No"),
+            and_(Company.cease_trade_order.is_not(None), Company.cease_trade_order != "",
+                 Company.cease_trade_order != "No"),
+        ))
+    total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    rows = list(db.scalars(stmt.order_by(Company.name.asc()).limit(limit).offset(offset)))
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "companies": [CompanyOut.model_validate(c) for c in rows],
+    }
+
+
+@router.post("/companies/bulk-update")
+def bulk_update_companies(payload: dict, db: Session = Depends(get_db)):
+    """Apply one change to many companies.
+
+    Body: {"ids": [...], "set": {"saved": true, "exchange": "TSXV", ...}}.
+    Only whitelisted fields are writable -- a bulk endpoint that can set any
+    column is a foot-gun next to counters like total_documents.
+    """
+    ids = payload.get("ids") or []
+    changes = payload.get("set") or {}
+    allowed = {"saved", "paused", "exchange", "ticker", "name"}
+    unknown = set(changes) - allowed
+    if unknown:
+        raise HTTPException(400, f"cannot bulk-set: {', '.join(sorted(unknown))}")
+    if not ids:
+        raise HTTPException(400, "no company ids given")
+    updated = 0
+    for c in db.scalars(select(Company).where(Company.id.in_(ids))):
+        for k, v in changes.items():
+            if k in ("exchange", "ticker", "name"):
+                v = (v or "").strip() or None
+                if k == "name" and not v:
+                    continue  # never blank a name
+            setattr(c, k, v)
+        updated += 1
+    db.commit()
+    return {"updated": updated}
+
+
+@router.post("/companies/import")
+def import_companies(payload: dict, db: Session = Depends(get_db)):
+    """Import mapped CSV rows: [{name, number, exchange, ticker}, ...].
+
+    Matches an existing company by SEDAR number first, then by exact name, so a
+    re-import updates rather than duplicating. Rows without a number are still
+    created -- /companies/resolve-numbers fills those in afterwards.
+    """
+    rows = payload.get("rows") or []
+    save = bool(payload.get("save", True))
+    created, matched, skipped = 0, 0, []
+    touched: list[int] = []
+    for i, row in enumerate(rows):
+        name = (row.get("name") or "").strip()
+        number = (row.get("number") or "").strip()
+        if not name and not number:
+            skipped.append({"row": i + 1, "reason": "no name or number"})
+            continue
+        company = None
+        if number:
+            company = db.scalar(select(Company).where(Company.number == number))
+        if company is None and name:
+            company = db.scalar(select(Company).where(Company.name == name))
+        if company is None:
+            company = Company(number=number, name=name or number, type="(imported)")
+            db.add(company)
+            created += 1
+        else:
+            matched += 1
+            if number and not (company.number or "").strip():
+                company.number = number
+        for field in ("exchange", "ticker"):
+            val = (row.get(field) or "").strip()
+            if val:
+                setattr(company, field, val)
+        if save:
+            company.saved = True
+        db.flush()
+        touched.append(company.id)
+    db.commit()
+    missing = db.scalar(
+        select(func.count(Company.id)).where(
+            Company.id.in_(touched), or_(Company.number.is_(None), Company.number == "")
+        )
+    ) or 0
+    return {"created": created, "matched": matched, "skipped": skipped,
+            "ids": touched, "missing_numbers": missing, "total": len(rows)}
+
+
+@router.post("/companies/resolve-numbers", response_model=JobOut)
+def resolve_numbers(payload: dict | None = None, db: Session = Depends(get_db)):
+    """Queue a browser job that looks up missing SEDAR numbers by company name.
+
+    Body may pass {"ids": [...]}; with none given, every company missing a number
+    is attempted. Only exact name matches are written -- near misses come back as
+    a review list, because a wrong profile number files another company's
+    documents under this one.
+    """
+    ids = (payload or {}).get("ids") or []
+    if not ids:
+        ids = [
+            c.id for c in db.scalars(
+                select(Company).where(
+                    or_(Company.number.is_(None), Company.number == "")
+                )
+            )
+        ]
+    if not ids:
+        raise HTTPException(409, "no companies are missing a SEDAR number")
+    existing = db.scalar(
+        select(Job).where(Job.kind == KIND_RESOLVE,
+                          Job.status.in_([JOB_QUEUED, JOB_RUNNING]))
+    )
+    if existing:
+        return _job_out(existing)
+    job = Job(kind=KIND_RESOLVE, status=JOB_QUEUED,
+              params=_json.dumps({"company_ids": ids}))
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return _job_out(job)
 
 
 @router.get("/catalog/stats")

@@ -389,6 +389,221 @@ el("btn-recheck").addEventListener("click", async () => {
 });
 
 // --------------------------------------------------------------------------
+// Company manager: bulk edit the catalog, import a CSV, resolve missing numbers
+// --------------------------------------------------------------------------
+const MGR = { offset: 0, limit: 100, total: 0, selected: new Set(), rows: [] };
+
+async function loadManager() {
+  const q = el("mgr-search").value.trim();
+  const f = el("mgr-filter").value;
+  let data;
+  try {
+    data = await api(`/companies?q=${encodeURIComponent(q)}&filter=${f}` +
+                     `&limit=${MGR.limit}&offset=${MGR.offset}`);
+  } catch { return; }
+  MGR.total = data.total; MGR.rows = data.companies;
+  el("mgr-count").textContent = `${data.total} compan${data.total === 1 ? "y" : "ies"}`;
+  const from = data.total ? MGR.offset + 1 : 0;
+  el("mgr-page").textContent = `${from}–${Math.min(MGR.offset + MGR.limit, data.total)} of ${data.total}`;
+  el("mgr-prev").disabled = MGR.offset <= 0;
+  el("mgr-next").disabled = MGR.offset + MGR.limit >= data.total;
+
+  el("mgr-table").innerHTML = `
+    <div class="mgr-row mgr-head">
+      <span><input type="checkbox" id="mgr-all" /></span>
+      <span>Name</span><span>SEDAR #</span><span>Exch</span><span>Ticker</span>
+      <span>Held</span><span>Status</span>
+    </div>` + data.companies.map((c) => {
+      const flags = [];
+      if (c.paused) flags.push(`<span class="tag">paused</span>`);
+      if (c.saved) flags.push(`<span class="tag saved">saved</span>`);
+      const held = c.reported_total
+        ? `${c.total_documents}/${c.reported_total}` : (c.total_documents || "");
+      return `<div class="mgr-row">
+        <span><input type="checkbox" data-sel="${c.id}" ${MGR.selected.has(c.id) ? "checked" : ""} /></span>
+        <span class="nm" title="${esc(c.name)}">${esc(c.name)}</span>
+        <span class="${c.number ? "" : "warn-cell"}">${esc(c.number || "— none —")}</span>
+        <span>${esc(c.exchange || "")}</span>
+        <span>${esc(c.ticker || "")}</span>
+        <span>${held}</span>
+        <span>${flags.join(" ")}</span>
+      </div>`;
+    }).join("");
+
+  el("mgr-table").querySelectorAll("[data-sel]").forEach((cb) =>
+    cb.addEventListener("change", () => {
+      const id = +cb.dataset.sel;
+      cb.checked ? MGR.selected.add(id) : MGR.selected.delete(id);
+      paintBulk();
+    }));
+  const all = el("mgr-all");
+  if (all) all.addEventListener("change", () => {
+    data.companies.forEach((c) => all.checked ? MGR.selected.add(c.id) : MGR.selected.delete(c.id));
+    loadManager();
+  });
+  paintBulk();
+}
+
+function paintBulk() {
+  const n = MGR.selected.size;
+  el("mgr-bulk").hidden = n === 0;
+  el("mgr-selected").textContent = `${n} selected`;
+}
+
+async function bulkAction(kind) {
+  const ids = [...MGR.selected];
+  if (!ids.length) return;
+  try {
+    if (kind === "download") {
+      // Queued one at a time on purpose: the endpoint refuses paused companies
+      // individually, so a paused one in the selection can't sink the rest.
+      let ok = 0, refused = 0;
+      for (const id of ids) {
+        try { await api(`/companies/${id}/download`, { method: "POST" }); ok++; }
+        catch { refused++; }
+      }
+      alert(`Queued ${ok} download(s)` + (refused ? `; ${refused} refused (paused?)` : ""));
+    } else {
+      const set = { save: { saved: true }, unsave: { saved: false },
+                    pause: { paused: true }, unpause: { paused: false } }[kind]
+        || { exchange: el("mgr-set-exchange").value, ticker: el("mgr-set-ticker").value };
+      if (kind === "setslug" && !set.exchange && !set.ticker) {
+        alert("Enter an exchange and/or ticker to apply."); return;
+      }
+      const r = await api("/companies/bulk-update", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids, set }),
+      });
+      alert(`Updated ${r.updated} compan${r.updated === 1 ? "y" : "ies"}`);
+    }
+  } catch (e) { alert("Bulk action failed: " + e.message); return; }
+  MGR.selected.clear();
+  loadManager(); loadSaved(); loadQueue();
+}
+
+document.querySelectorAll("[data-bulk]").forEach((b) =>
+  b.addEventListener("click", () => bulkAction(b.dataset.bulk)));
+el("mgr-search").addEventListener("input", () => {
+  clearTimeout(MGR._t); MGR._t = setTimeout(() => { MGR.offset = 0; loadManager(); }, 250);
+});
+el("mgr-filter").addEventListener("change", () => { MGR.offset = 0; loadManager(); });
+el("mgr-prev").addEventListener("click", () => { MGR.offset = Math.max(0, MGR.offset - MGR.limit); loadManager(); });
+el("mgr-next").addEventListener("click", () => { MGR.offset += MGR.limit; loadManager(); });
+
+el("mgr-resolve-btn").addEventListener("click", async () => {
+  const ids = [...MGR.selected];
+  const scope = ids.length ? `${ids.length} selected` : "every company missing a number";
+  if (!confirm(`Look up SEDAR numbers for ${scope}? This drives the browser and only writes exact name matches; anything uncertain comes back for review.`)) return;
+  try {
+    const j = await api("/companies/resolve-numbers", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+    alert(`Queued resolve job #${j.id}. Watch the queue for results.`);
+  } catch (e) { alert("Could not queue: " + e.message); }
+  loadQueue();
+});
+
+// ---- CSV import with column mapping ----
+let CSV = { header: [], rows: [] };
+
+function parseCSV(text) {
+  // Small RFC4180-ish parser: quoted fields, escaped quotes, embedded commas
+  // and newlines. Company names routinely contain commas, so splitting on ","
+  // would silently corrupt the import.
+  const rows = []; let row = [], field = "", q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else q = false; }
+      else field += c;
+    } else if (c === '"') q = true;
+    else if (c === ",") { row.push(field); field = ""; }
+    else if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
+    else if (c !== "\r") field += c;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter((r) => r.some((v) => (v || "").trim()));
+}
+
+el("mgr-import-btn").addEventListener("click", () => { el("import-modal").hidden = false; });
+el("import-close").addEventListener("click", () => { el("import-modal").hidden = true; });
+
+el("import-file").addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const rows = parseCSV(reader.result);
+    if (rows.length < 2) { alert("That CSV has no data rows."); return; }
+    CSV.header = rows[0].map((h) => h.trim());
+    CSV.rows = rows.slice(1);
+    const opts = `<option value="">— not mapped —</option>` +
+      CSV.header.map((h, i) => `<option value="${i}">${esc(h)}</option>`).join("");
+    document.querySelectorAll("[data-map]").forEach((sel) => {
+      sel.innerHTML = opts;
+      // Pre-select the obvious column so the common case needs no clicks.
+      const want = sel.dataset.map;
+      const guess = CSV.header.findIndex((h) => {
+        const k = h.toLowerCase().replace(/[^a-z]/g, "");
+        if (want === "name") return k.includes("name") || k.includes("company") || k.includes("issuer");
+        if (want === "number") return k.includes("sedar") || k === "number" || k.includes("profilenumber");
+        if (want === "exchange") return k.includes("exchange") || k === "exch" || k.includes("venue");
+        if (want === "ticker") return k.includes("ticker") || k.includes("symbol");
+        return false;
+      });
+      if (guess >= 0) sel.value = String(guess);
+      sel.addEventListener("change", previewImport);
+    });
+    el("import-map").hidden = false;
+    previewImport();
+  };
+  reader.readAsText(file);
+});
+
+function mappedRows() {
+  const map = {};
+  document.querySelectorAll("[data-map]").forEach((s) => { map[s.dataset.map] = s.value === "" ? -1 : +s.value; });
+  return CSV.rows.map((r) => ({
+    name: map.name >= 0 ? (r[map.name] || "").trim() : "",
+    number: map.number >= 0 ? (r[map.number] || "").trim() : "",
+    exchange: map.exchange >= 0 ? (r[map.exchange] || "").trim() : "",
+    ticker: map.ticker >= 0 ? (r[map.ticker] || "").trim() : "",
+  }));
+}
+
+function previewImport() {
+  const rows = mappedRows();
+  const noNumber = rows.filter((r) => !r.number).length;
+  const noName = rows.filter((r) => !r.name && !r.number).length;
+  el("import-preview").innerHTML = `
+    <div class="hint">${rows.length} row(s). ${noNumber} without a SEDAR number` +
+    (noNumber ? ` — resolvable from SEDAR+ after import` : "") +
+    (noName ? `. <b>${noName} row(s) have neither name nor number and will be skipped.</b>` : ".") + `</div>` +
+    `<table class="preview"><tr><th>Name</th><th>SEDAR #</th><th>Exch</th><th>Ticker</th></tr>` +
+    rows.slice(0, 5).map((r) => `<tr><td>${esc(r.name)}</td><td>${esc(r.number)}</td><td>${esc(r.exchange)}</td><td>${esc(r.ticker)}</td></tr>`).join("") +
+    `</table>`;
+}
+
+el("import-run").addEventListener("click", async () => {
+  const rows = mappedRows();
+  if (!rows.length) return;
+  el("import-run").disabled = true;
+  el("import-status").textContent = "importing…";
+  try {
+    const r = await api("/companies/import", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rows, save: el("import-save").checked }),
+    });
+    el("import-status").textContent =
+      `${r.created} created, ${r.matched} matched, ${r.skipped.length} skipped` +
+      (r.missing_numbers ? `, ${r.missing_numbers} still missing a SEDAR #` : "");
+    loadManager(); loadSaved();
+  } catch (e) { el("import-status").textContent = "failed: " + e.message; }
+  el("import-run").disabled = false;
+});
+
+// --------------------------------------------------------------------------
 // R2 viewer (read-only browse of the object store, rooted at <bucket>/<prefix>)
 // --------------------------------------------------------------------------
 function fmtSize(n) {
@@ -489,7 +704,7 @@ el("logout-btn").addEventListener("click", async () => {
 })();
 
 // --------------------------------------------------------------------------
-function refreshAll() { loadStats(); loadSaved(); loadQueue(); }
+function refreshAll() { loadStats(); loadSaved(); loadQueue(); loadManager(); }
 refreshAll();
 loadR2();
 setInterval(() => { loadQueue(); loadStats(); }, 3000);

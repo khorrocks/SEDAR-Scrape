@@ -66,6 +66,78 @@
       </section>
     </div>
 
+    <section class="panel" id="manager-panel">
+      <div class="queue-head">
+        <h2>Company manager</h2>
+        <div class="queue-head-actions">
+          <button id="mgr-import-btn" class="ghost small">⬆ Import CSV</button>
+          <button id="mgr-resolve-btn" class="ghost small">🔎 Resolve missing SEDAR #s</button>
+          <a class="btn-link" href="/api/catalog/export" download>⬇ Export catalog</a>
+        </div>
+      </div>
+
+      <div class="mgr-controls">
+        <input id="mgr-search" type="text" placeholder="Search name, SEDAR # or ticker…" />
+        <select id="mgr-filter">
+          <option value="all">All companies</option>
+          <option value="saved">Saved only</option>
+          <option value="unsaved">Not saved</option>
+          <option value="no_number">Missing SEDAR #</option>
+          <option value="no_slug">Missing exchange/ticker</option>
+          <option value="paused">Paused</option>
+          <option value="flagged">In default / cease trade</option>
+        </select>
+        <span class="hint" id="mgr-count"></span>
+      </div>
+
+      <!-- Bulk action bar: only meaningful with a selection -->
+      <div class="mgr-bulk" id="mgr-bulk" hidden>
+        <span id="mgr-selected" class="hint"></span>
+        <button class="ghost small" data-bulk="save">Save</button>
+        <button class="ghost small" data-bulk="unsave">Unsave</button>
+        <button class="ghost small" data-bulk="pause">Pause</button>
+        <button class="ghost small" data-bulk="unpause">Unpause</button>
+        <button class="ghost small" data-bulk="download">Queue download</button>
+        <input id="mgr-set-exchange" class="mini" placeholder="exchange" />
+        <input id="mgr-set-ticker" class="mini" placeholder="ticker" />
+        <button class="ghost small" data-bulk="setslug">Apply exch/ticker</button>
+      </div>
+
+      <div id="mgr-table" class="mgr-table"></div>
+      <div class="mgr-pager">
+        <button id="mgr-prev" class="ghost small">← Prev</button>
+        <span class="hint" id="mgr-page"></span>
+        <button id="mgr-next" class="ghost small">Next →</button>
+      </div>
+    </section>
+
+    <!-- CSV import + column mapping -->
+    <div id="import-modal" class="drawer" hidden>
+      <div class="drawer-inner import-inner">
+        <button class="close" id="import-close">×</button>
+        <h2>Import companies from CSV</h2>
+        <p class="hint">Pick the file, then say which column holds what. Rows without a
+          SEDAR number can be resolved afterwards from SEDAR+ by name.</p>
+        <input type="file" id="import-file" accept=".csv,text/csv" />
+        <div id="import-map" hidden>
+          <div class="map-grid">
+            <label>Company name <select data-map="name"></select></label>
+            <label>SEDAR number <select data-map="number"></select></label>
+            <label>Exchange <select data-map="exchange"></select></label>
+            <label>Ticker <select data-map="ticker"></select></label>
+          </div>
+          <label class="test-toggle">
+            <input type="checkbox" id="import-save" checked /> Mark imported companies as saved
+          </label>
+          <div id="import-preview" class="import-preview"></div>
+          <div class="drawer-actions">
+            <button id="import-run">Import</button>
+            <span class="hint" id="import-status"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <section class="panel r2-panel">
       <div class="r2-head">
         <h2>R2 Viewer</h2>

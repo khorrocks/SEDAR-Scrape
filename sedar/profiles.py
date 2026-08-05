@@ -22,6 +22,7 @@ column can't throw the mapping off.
 from __future__ import annotations
 
 import os
+import re
 import time
 
 from selenium.webdriver.common.by import By
@@ -158,6 +159,53 @@ def scrape_page(driver, col: dict[str, int] | None = None) -> list[dict]:
         except StaleElementReferenceException:
             time.sleep(1)
     return out
+
+
+def find_number_by_name(driver, name: str, settle: float = 6.0) -> dict | None:
+    """Look up an issuer's SEDAR profile number from its name.
+
+    Uses the Reporting Issuers List's "Filter by name or profile number" box.
+    Returns the best row as a dict, or None. The caller decides whether the match
+    is good enough -- an exact-ish name check matters here, because a wrong
+    profile number silently attaches one company's filings to another.
+    """
+    typed = driver.execute_script(
+        """const v = arguments[0];
+           const el = [...document.querySelectorAll('input')].find(i => {
+             const s = ((i.getAttribute('placeholder') || '') + ' ' +
+                        (i.getAttribute('aria-label') || '')).toLowerCase();
+             return s.includes('filter') && (s.includes('name') || s.includes('profile'));
+           });
+           if (!el) return false;
+           el.focus(); el.value = v;
+           el.dispatchEvent(new Event('input', {bubbles: true}));
+           el.dispatchEvent(new Event('change', {bubbles: true}));
+           el.dispatchEvent(new KeyboardEvent('keyup', {bubbles: true, key: 'Enter'}));
+           return true;""",
+        name,
+    )
+    if not typed:
+        return None
+    time.sleep(settle)
+    col = _column_index(driver)
+    rows = scrape_page(driver, col)
+    if not rows:
+        return None
+
+    def norm(s: str) -> str:
+        s = (s or "").lower()
+        # SEDAR renders "Legal Name / Other Name"; compare on the first part and
+        # drop punctuation and common suffixes so "Inc." vs "Inc" still matches.
+        s = s.split("/")[0]
+        s = re.sub(r"[.,]", " ", s)
+        s = re.sub(r"\b(inc|ltd|limited|corp|corporation|co|company|plc|sa)\b", " ", s)
+        return re.sub(r"\s+", " ", s).strip()
+
+    want = norm(name)
+    for r in rows:
+        if norm(r.get("name", "")) == want:
+            return {**r, "match": "exact"}
+    return {**rows[0], "match": "first", "candidates": len(rows)}
 
 
 def next_page(driver, settle: float = 8.0) -> bool:
