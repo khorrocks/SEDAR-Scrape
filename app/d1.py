@@ -67,6 +67,28 @@ ON CONFLICT(sedar_number) DO UPDATE SET
 """
 
 
+def _lit(value) -> str:
+    """Render a Python value as a SQLite literal.
+
+    Bulk upserts here are built as literal SQL rather than bound parameters
+    because D1 caps a statement at 100 bound variables -- with 14 columns that
+    is 7 rows per round trip, or ~765 requests for the catalog. Inlining gets it
+    to ~54.
+
+    Safe because SQLite string literals have exactly one escape: a single quote
+    is doubled. There are no backslash escapes to worry about, and every value
+    is normalised to None/bool/int/str first, so nothing reaches the SQL as an
+    unquoted blob.
+    """
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, int):
+        return str(value)
+    return "'" + str(value).replace("'", "''") + "'"
+
+
 class D1Disabled(RuntimeError):
     """Raised when a D1 operation is attempted without configuration."""
 
@@ -122,38 +144,47 @@ def publish_catalog(companies: list, batch_size: int = 100) -> dict:
     assignments = ",\n".join(
         f"  {col} = excluded.{col}" for col in _COLUMNS if col != "sedar_number"
     )
-    row_placeholder = "(" + ", ".join(["?"] * len(_COLUMNS)) + ")"
-    sql = _UPSERT.format(table=table, columns=columns, values="{values}",
-                         assignments=assignments)
     sent = 0
     with_slug = 0
 
     for start in range(0, len(rows), batch_size):
         chunk = rows[start : start + batch_size]
-        params: list = []
+        values = []
         for c in chunk:
             slug = c.folder_slug or None
             if slug:
                 with_slug += 1
-            params.extend(
-                [
-                    c.number,
-                    c.name,
-                    slug,
-                    c.exchange,
-                    c.ticker,
-                    c.jurisdiction,
-                    c.type,
-                    c.in_default,
-                    c.cease_trade_order,
-                    1 if c.saved else 0,
-                    c.total_documents,
-                    c.reported_total,
-                    1 if c.is_complete else 0,
-                    now,
-                ]
+            values.append(
+                "("
+                + ", ".join(
+                    _lit(v)
+                    for v in (
+                        c.number,
+                        c.name,
+                        slug,
+                        c.exchange,
+                        c.ticker,
+                        c.jurisdiction,
+                        c.type,
+                        c.in_default,
+                        c.cease_trade_order,
+                        bool(c.saved),
+                        c.total_documents,
+                        c.reported_total,
+                        bool(c.is_complete),
+                        now,
+                    )
+                )
+                + ")"
             )
-        _query(sql.format(values=", ".join([row_placeholder] * len(chunk))), params)
+        _query(
+            _UPSERT.format(
+                table=table,
+                columns=columns,
+                values=", ".join(values),
+                assignments=assignments,
+            )
+        )
         sent += len(chunk)
 
     return {"published": sent, "skipped_no_number": skipped, "with_slug": with_slug,
