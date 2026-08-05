@@ -14,81 +14,8 @@ const esc = (s) => (s == null ? "" : String(s)).replace(/[&<>"]/g, (c) =>
 const clip = (s, n = 280) => { s = String(s == null ? "" : s); return s.length > n ? s.slice(0, n) + "…" : s; };
 
 // --------------------------------------------------------------------------
-// Autocomplete
+// Add a company (by exchange + ticker + SEDAR number)
 // --------------------------------------------------------------------------
-const search = el("search");
-const suggestions = el("suggestions");
-let activeIdx = -1;
-let lastResults = [];
-let debounce;
-
-search.addEventListener("input", () => {
-  clearTimeout(debounce);
-  const q = search.value.trim();
-  debounce = setTimeout(() => runSearch(q), 150);
-});
-
-search.addEventListener("keydown", (e) => {
-  const items = [...suggestions.querySelectorAll("li")];
-  if (e.key === "ArrowDown") { activeIdx = Math.min(activeIdx + 1, items.length - 1); paintActive(items); e.preventDefault(); }
-  else if (e.key === "ArrowUp") { activeIdx = Math.max(activeIdx - 1, 0); paintActive(items); e.preventDefault(); }
-  else if (e.key === "Enter" && activeIdx >= 0) { selectCompany(lastResults[activeIdx]); e.preventDefault(); }
-  else if (e.key === "Escape") { hideSuggestions(); }
-});
-
-document.addEventListener("click", (e) => {
-  if (!e.target.closest(".search-wrap")) hideSuggestions();
-});
-
-function paintActive(items) {
-  items.forEach((li, i) => li.classList.toggle("active", i === activeIdx));
-}
-function hideSuggestions() { suggestions.hidden = true; activeIdx = -1; }
-
-async function runSearch(q) {
-  if (!q) { hideSuggestions(); return; }
-  try {
-    lastResults = await api(`/companies/search?q=${encodeURIComponent(q)}&limit=12`);
-  } catch { return; }
-  if (!lastResults.length) {
-    const digits = q.replace(/\D/g, "");
-    const addItem = digits
-      ? `<li id="sugg-add" data-num="${esc(digits)}">➕ Use SEDAR #${esc(digits)} — add exchange &amp; ticker below</li>`
-      : `<li class="empty">No local match. Add it by SEDAR number below.</li>`;
-    suggestions.innerHTML = addItem;
-    const add = document.getElementById("sugg-add");
-    if (add) add.addEventListener("click", () => prefillAdd({ number: add.dataset.num }));
-    suggestions.hidden = false;
-    return;
-  }
-  suggestions.innerHTML = lastResults.map((c, i) => `
-    <li data-i="${i}">
-      <span>${esc(c.name)} ${c.saved ? '<span class="tag saved">saved</span>' : ""}</span>
-      <span class="meta">${esc(c.type || "")} · ${esc(c.jurisdiction || "")} · #${esc(c.number)}</span>
-    </li>`).join("");
-  [...suggestions.querySelectorAll("li")].forEach((li) =>
-    li.addEventListener("click", () => selectCompany(lastResults[+li.dataset.i])));
-  activeIdx = -1;
-  suggestions.hidden = false;
-}
-
-// Selecting a company prefills the add row (exchange + ticker still required)
-// rather than downloading immediately, since they name the company's R2 folder.
-function selectCompany(c) {
-  if (!c) return;
-  prefillAdd(c);
-}
-
-function prefillAdd(c) {
-  hideSuggestions();
-  search.value = "";
-  el("add-number").value = c.number || "";
-  el("add-name").value = c.name || "";
-  el("add-exchange").value = c.exchange || "";
-  el("add-ticker").value = c.ticker || "";
-  (c.exchange ? el("add-ticker") : el("add-exchange")).focus();
-}
-
 async function addByNumber() {
   const number = el("add-number").value.trim();
   const name = el("add-name").value.trim();
@@ -96,20 +23,17 @@ async function addByNumber() {
   const ticker = el("add-ticker").value.trim();
   if (!number) { el("add-number").focus(); return; }
   if (!exchange || !ticker) {
-    alert("Enter an exchange and ticker — together they name the company's R2 folder.");
+    alert("Enter an exchange and ticker.");
     (exchange ? el("add-ticker") : el("add-exchange")).focus();
     return;
   }
-  const maxBatches = el("test-mode").checked ? 1 : null;
   try {
     await api(`/companies/add`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ number, name: name || null, exchange, ticker, download: true, max_batches: maxBatches }),
+      body: JSON.stringify({ number, name: name || null, exchange, ticker, download: true }),
     });
   } catch (e) { alert("Could not add company: " + e.message); return; }
-  hideSuggestions();
-  search.value = "";
   ["add-number", "add-name", "add-exchange", "add-ticker"].forEach((id) => (el(id).value = ""));
   refreshAll();
 }
@@ -192,8 +116,8 @@ async function loadStats() {
        <span><b>${s.saved}</b> saved</span>
        <span><b>${s.documents}</b> documents</span>`;
     el("catalog-hint").textContent = s.companies
-      ? `Autocomplete searches ${s.companies} locally-stored companies.`
-      : "Catalog is empty — run an enumerate job to populate autocomplete (see README).";
+      ? `${s.companies} companies in the catalog — manage them below.`
+      : "Catalog is empty — import a CSV or run an enumerate job.";
   } catch {}
 }
 
@@ -216,7 +140,7 @@ async function loadSaved() {
   let rows = [];
   try { rows = await api("/saved"); } catch {}
   const box = el("saved");
-  if (!rows.length) { box.innerHTML = `<div class="empty">No saved companies yet. Search above to add one.</div>`; return; }
+  if (!rows.length) { box.innerHTML = `<div class="empty">No saved companies yet. Add one above, or save companies from the manager below.</div>`; return; }
   box.innerHTML = rows.map((c) => `
     <div class="card">
       <div class="card-main">
@@ -379,8 +303,7 @@ el("drawer-close").addEventListener("click", () => { el("drawer").hidden = true;
 el("drawer").addEventListener("click", (e) => { if (e.target.id === "drawer") el("drawer").hidden = true; });
 el("btn-redownload").addEventListener("click", async () => {
   if (drawerCompanyId) {
-    const qs = el("test-mode").checked ? "?max_batches=1" : "";
-    await api(`/companies/${drawerCompanyId}/download${qs}`, { method: "POST" });
+    await api(`/companies/${drawerCompanyId}/download`, { method: "POST" });
     loadQueue();
   }
 });
@@ -412,7 +335,7 @@ async function loadManager() {
     <div class="mgr-row mgr-head">
       <span><input type="checkbox" id="mgr-all" /></span>
       <span>Name</span><span>SEDAR #</span><span>Exch</span><span>Ticker</span>
-      <span>Held</span><span>Status</span>
+      <span>Held</span><span>Status</span><span></span>
     </div>` + data.companies.map((c) => {
       const flags = [];
       if (c.paused) flags.push(`<span class="tag">paused</span>`);
@@ -422,11 +345,16 @@ async function loadManager() {
       return `<div class="mgr-row">
         <span><input type="checkbox" data-sel="${c.id}" ${MGR.selected.has(c.id) ? "checked" : ""} /></span>
         <span class="nm" title="${esc(c.name)}">${esc(c.name)}</span>
-        <span class="${c.number ? "" : "warn-cell"}">${esc(c.number || "— none —")}</span>
+        <span><input class="num-edit ${c.number ? "" : "warn-cell"}" data-num="${c.id}"
+                     value="${esc(c.number || "")}" placeholder="— none —"
+                     inputmode="numeric" title="Type a SEDAR number and press Enter" /></span>
         <span>${esc(c.exchange || "")}</span>
         <span>${esc(c.ticker || "")}</span>
         <span>${held}</span>
         <span>${flags.join(" ")}</span>
+        <span><button class="link-danger" data-del="${c.id}"
+                      data-name="${esc(c.name)}" data-held="${c.total_documents || 0}"
+                      title="Delete this company">✕</button></span>
       </div>`;
     }).join("");
 
@@ -435,6 +363,51 @@ async function loadManager() {
       const id = +cb.dataset.sel;
       cb.checked ? MGR.selected.add(id) : MGR.selected.delete(id);
       paintBulk();
+    }));
+
+  // Inline SEDAR number entry: commit on Enter or blur, ignore a no-op edit.
+  el("mgr-table").querySelectorAll("[data-num]").forEach((inp) => {
+    const original = inp.value;
+    const commit = async () => {
+      const val = inp.value.trim();
+      if (val === original) return;
+      try {
+        await api("/companies/bulk-update", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: [+inp.dataset.num], set: { number: val } }),
+        });
+      } catch (e) {
+        alert("Could not set the SEDAR number: " + e.message);
+        inp.value = original;
+        return;
+      }
+      loadManager(); loadSaved(); loadStats();
+    };
+    inp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); inp.blur(); }
+      if (e.key === "Escape") { inp.value = original; inp.blur(); }
+    });
+    inp.addEventListener("blur", commit);
+  });
+
+  el("mgr-table").querySelectorAll("[data-del]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const held = +b.dataset.held;
+      const warn = held
+        ? `\n\nIt holds ${held} document record(s). Its files in R2 are NOT deleted, but this app will forget them and a re-scrape would start from page 1.`
+        : "";
+      if (!confirm(`Delete "${b.dataset.name}"?${warn}`)) return;
+      try {
+        const r = await api("/companies/bulk-delete", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: [+b.dataset.del], force: true }),
+        });
+        if (!r.deleted) {
+          alert("Not deleted: " + ((r.refused && r.refused[0] && r.refused[0].reason) || "refused"));
+        }
+      } catch (e) { alert("Could not delete: " + e.message); return; }
+      MGR.selected.delete(+b.dataset.del);
+      loadManager(); loadSaved(); loadStats();
     }));
   const all = el("mgr-all");
   if (all) all.addEventListener("change", () => {

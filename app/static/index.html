@@ -18,12 +18,7 @@
 
   <main>
     <section class="panel search-panel">
-      <h2>Find a company</h2>
-      <div class="search-wrap">
-        <input id="search" type="text" autocomplete="off" spellcheck="false"
-               placeholder="Search Canadian companies by name or number…" />
-        <ul id="suggestions" class="suggestions" hidden></ul>
-      </div>
+      <h2>Add a company</h2>
       <p class="hint" id="catalog-hint"></p>
       <div class="catalog-actions">
         <button id="enumerate-btn" class="ghost small">↻ Build / refresh company catalog</button>
@@ -32,19 +27,12 @@
       </div>
 
       <div class="add-row">
-        <span class="add-label">Add a company:</span>
         <input id="add-exchange" type="text" class="mini" placeholder="Exchange (tsxv)" />
         <input id="add-ticker" type="text" class="mini" placeholder="Ticker (sprq)" />
         <input id="add-number" type="text" inputmode="numeric" placeholder="SEDAR # e.g. 000003771" />
         <input id="add-name" type="text" placeholder="Name (optional)" />
         <button id="add-btn" class="small">Add &amp; download</button>
       </div>
-      <label class="test-toggle">
-        <input type="checkbox" id="test-mode" /> Test mode — download only the first batch (30 docs)
-      </label>
-      <p class="hint">Exchange + ticker name the R2 folder:
-        <code>&lt;exchange&gt;-&lt;ticker&gt;/raw-data/</code>. Pick a company from the
-        list above to prefill its number.</p>
     </section>
 
     <div class="columns">

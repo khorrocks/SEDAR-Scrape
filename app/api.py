@@ -247,19 +247,30 @@ def bulk_update_companies(payload: dict, db: Session = Depends(get_db)):
     """
     ids = payload.get("ids") or []
     changes = payload.get("set") or {}
-    allowed = {"saved", "paused", "exchange", "ticker", "name"}
+    allowed = {"saved", "paused", "exchange", "ticker", "name", "number"}
     unknown = set(changes) - allowed
     if unknown:
         raise HTTPException(400, f"cannot bulk-set: {', '.join(sorted(unknown))}")
     if not ids:
         raise HTTPException(400, "no company ids given")
+    # A SEDAR number identifies one issuer, so it is the one field that cannot
+    # be applied across a selection -- the second write would collide anyway.
+    if "number" in changes and len(ids) != 1:
+        raise HTTPException(400, "a SEDAR number can only be set on one company at a time")
     updated = 0
     for c in db.scalars(select(Company).where(Company.id.in_(ids))):
         for k, v in changes.items():
-            if k in ("exchange", "ticker", "name"):
+            if k in ("exchange", "ticker", "name", "number"):
                 v = (v or "").strip() or None
                 if k == "name" and not v:
                     continue  # never blank a name
+                if k == "number" and v:
+                    clash = db.scalar(select(Company).where(Company.number == v,
+                                                            Company.id != c.id))
+                    if clash is not None:
+                        raise HTTPException(
+                            409, f"SEDAR #{v} already belongs to {clash.name}"
+                        )
             setattr(c, k, v)
         updated += 1
     db.commit()
@@ -377,6 +388,10 @@ def bulk_delete_companies(payload: dict, db: Session = Depends(get_db)):
     Never touches R2.
     """
     ids = [int(i) for i in (payload.get("ids") or [])]
+    # force is a deliberate, per-call override for deleting a company that does
+    # hold documents -- the UI asks first and spells out that R2 keeps the files
+    # while this app forgets them.
+    force = bool(payload.get("force"))
     if not ids:
         raise HTTPException(400, "no ids given")
 
@@ -385,20 +400,22 @@ def bulk_delete_companies(payload: dict, db: Session = Depends(get_db)):
         held = db.scalar(
             select(func.count(Document.id)).where(Document.company_id == c.id)
         ) or 0
-        if held or (c.total_documents or 0) > 0:
+        if (held or (c.total_documents or 0) > 0) and not force:
             refused.append({"id": c.id, "name": c.name,
                             "reason": f"holds {held or c.total_documents} document(s)"})
         else:
             doomed.append(c.id)
 
-    n_batches = n_jobs = n_companies = 0
+    n_batches = n_jobs = n_companies = n_docs = 0
     if doomed:
+        n_docs = db.execute(delete(Document).where(Document.company_id.in_(doomed))).rowcount
         n_batches = db.execute(delete(Batch).where(Batch.company_id.in_(doomed))).rowcount
         n_jobs = db.execute(delete(Job).where(Job.company_id.in_(doomed))).rowcount
         n_companies = db.execute(delete(Company).where(Company.id.in_(doomed))).rowcount
         db.commit()
-    return {"deleted": n_companies, "batches": n_batches, "jobs": n_jobs,
-            "refused": refused, "note": "R2 objects were not touched"}
+    return {"deleted": n_companies, "documents": n_docs, "batches": n_batches,
+            "jobs": n_jobs, "refused": refused,
+            "note": "R2 objects were not touched"}
 
 
 @router.post("/companies/resolve-numbers", response_model=JobOut)
