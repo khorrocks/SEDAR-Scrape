@@ -24,31 +24,46 @@ from .config import settings
 
 _API = "https://api.cloudflare.com/client/v4/accounts/{acct}/d1/database/{db}/query"
 
-# Mirrors what /catalog/export emits. sedar_number is the natural key: it is
-# SEDAR's own identifier and the column the downstream join needs.
+# sedar_number is the primary key (SEDAR's own identifier), but folder_slug is
+# the column that actually matters downstream: the existing `files` table keys
+# every row by "<exchange>-<ticker>" in files.company, so the slug is what joins
+# a filing back to its issuer. Publishing the number alone would have produced a
+# table nothing could join to.
 _CREATE = """
 CREATE TABLE IF NOT EXISTS {table} (
   sedar_number      TEXT PRIMARY KEY,
-  name              TEXT,
+  name              TEXT NOT NULL,
+  folder_slug       TEXT,
+  exchange          TEXT,
+  ticker            TEXT,
   jurisdiction      TEXT,
   profile_type      TEXT,
   in_default        TEXT,
   cease_trade_order TEXT,
+  saved             INTEGER NOT NULL DEFAULT 0,
+  total_documents   INTEGER,
+  reported_total    INTEGER,
+  is_complete       INTEGER,
   updated_at        TEXT
 )
 """
 
+_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_{table}_slug ON {table}(folder_slug)",
+    "CREATE INDEX IF NOT EXISTS idx_{table}_name ON {table}(name)",
+)
+
+_COLUMNS = (
+    "sedar_number", "name", "folder_slug", "exchange", "ticker", "jurisdiction",
+    "profile_type", "in_default", "cease_trade_order", "saved",
+    "total_documents", "reported_total", "is_complete", "updated_at",
+)
+
 _UPSERT = """
-INSERT INTO {table}
-  (sedar_number, name, jurisdiction, profile_type, in_default, cease_trade_order, updated_at)
+INSERT INTO {table} ({columns})
 VALUES {values}
 ON CONFLICT(sedar_number) DO UPDATE SET
-  name = excluded.name,
-  jurisdiction = excluded.jurisdiction,
-  profile_type = excluded.profile_type,
-  in_default = excluded.in_default,
-  cease_trade_order = excluded.cease_trade_order,
-  updated_at = excluded.updated_at
+{assignments}
 """
 
 
@@ -95,30 +110,51 @@ def publish_catalog(companies: list, batch_size: int = 100) -> dict:
     """
     table = settings.d1_table
     _query(_CREATE.format(table=table))
+    for stmt in _INDEXES:
+        _query(stmt.format(table=table))
 
     now = datetime.now(timezone.utc).isoformat()
     rows = [c for c in companies if (c.number or "").strip()]
     skipped = len(companies) - len(rows)
+
+    columns = ", ".join(_COLUMNS)
+    # Every column except the conflict key is overwritten from the incoming row.
+    assignments = ",\n".join(
+        f"  {col} = excluded.{col}" for col in _COLUMNS if col != "sedar_number"
+    )
+    row_placeholder = "(" + ", ".join(["?"] * len(_COLUMNS)) + ")"
+    sql = _UPSERT.format(table=table, columns=columns, values="{values}",
+                         assignments=assignments)
     sent = 0
+    with_slug = 0
 
     for start in range(0, len(rows), batch_size):
         chunk = rows[start : start + batch_size]
-        placeholders = ", ".join(["(?, ?, ?, ?, ?, ?, ?)"] * len(chunk))
         params: list = []
         for c in chunk:
+            slug = c.folder_slug or None
+            if slug:
+                with_slug += 1
             params.extend(
                 [
                     c.number,
                     c.name,
+                    slug,
+                    c.exchange,
+                    c.ticker,
                     c.jurisdiction,
                     c.type,
                     c.in_default,
                     c.cease_trade_order,
+                    1 if c.saved else 0,
+                    c.total_documents,
+                    c.reported_total,
+                    1 if c.is_complete else 0,
                     now,
                 ]
             )
-        _query(_UPSERT.format(table=table, values=placeholders), params)
+        _query(sql.format(values=", ".join([row_placeholder] * len(chunk))), params)
         sent += len(chunk)
 
-    return {"published": sent, "skipped_no_number": skipped, "table": table,
-            "updated_at": now}
+    return {"published": sent, "skipped_no_number": skipped, "with_slug": with_slug,
+            "table": table, "updated_at": now}

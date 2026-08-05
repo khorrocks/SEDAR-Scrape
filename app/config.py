@@ -107,7 +107,12 @@ class Settings:
     # The local DB stays authoritative; this is a published copy so the
     # Cloudflare-side stack can join name -> SEDAR number itself. Unset = no-op.
     d1_account_id: str | None = os.getenv("D1_ACCOUNT_ID") or os.getenv("R2_ACCOUNT_ID") or None
-    d1_database_id: str | None = os.getenv("D1_DATABASE_ID") or None
+    # The "smallcap" database, which already holds the files/chunks/entities the
+    # downstream stack reads. An identifier, not a secret -- it is useless
+    # without D1_API_TOKEN, which stays in env like the R2 keys.
+    d1_database_id: str | None = (
+        os.getenv("D1_DATABASE_ID") or "be1373e4-9d78-47a4-9a6f-bb37bfd23b14"
+    )
     d1_api_token: str | None = os.getenv("D1_API_TOKEN") or None
     d1_table: str = os.getenv("D1_TABLE", "sedar_catalog")
     # Push the mirror automatically whenever an enumerate finishes.
