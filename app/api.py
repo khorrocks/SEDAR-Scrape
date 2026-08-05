@@ -349,6 +349,27 @@ def resolve_numbers(payload: dict | None = None, db: Session = Depends(get_db)):
     return _job_out(job)
 
 
+@router.post("/catalog/publish")
+def publish_catalog_to_d1(db: Session = Depends(get_db)):
+    """Push the catalog to the Cloudflare D1 mirror.
+
+    One-way and on demand (the worker also does this after an enumerate). A
+    failure here means a stale mirror, never a broken scraper -- nothing in the
+    download path reads D1.
+    """
+    from . import d1
+
+    if not d1.enabled():
+        raise HTTPException(
+            503, "D1 is not configured (set D1_DATABASE_ID and D1_API_TOKEN)"
+        )
+    companies = list(db.scalars(select(Company).order_by(Company.name.asc())))
+    try:
+        return d1.publish_catalog(companies)
+    except Exception as exc:
+        raise HTTPException(502, f"D1 publish failed: {exc}")
+
+
 @router.get("/catalog/stats")
 def catalog_stats(db: Session = Depends(get_db)):
     total = db.scalar(select(func.count(Company.id)))

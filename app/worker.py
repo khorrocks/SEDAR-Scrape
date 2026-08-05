@@ -548,6 +548,21 @@ def _run_job(job_id: int, holder: _DriverHolder) -> None:
                     f"catalog now holds {_company_count(db)} companies "
                     f"({result['seen']} seen this pass)"
                 )
+                # Refresh the D1 mirror once the catalog is complete. Best-effort
+                # on purpose: a publish failure must not fail the enumerate that
+                # just succeeded, it only means the mirror is stale.
+                if settings.d1_auto_publish:
+                    try:
+                        from . import d1
+
+                        if d1.enabled():
+                            companies = list(db.scalars(select(Company)))
+                            summary = d1.publish_catalog(companies)
+                            print(f"[worker] D1 mirror updated: {summary}", flush=True)
+                            job.message += f"; D1 mirror updated ({summary['published']})"
+                    except Exception as exc:
+                        print(f"[worker] D1 publish failed (mirror is stale): {exc}",
+                              flush=True)
             db.commit()
             return
 

@@ -103,6 +103,16 @@ class Settings:
     auth_username: str | None = os.getenv("AUTH_USERNAME") or None
     auth_password: str | None = os.getenv("AUTH_PASSWORD") or None
 
+    # --- Cloudflare D1 (read-only catalog mirror) ---
+    # The local DB stays authoritative; this is a published copy so the
+    # Cloudflare-side stack can join name -> SEDAR number itself. Unset = no-op.
+    d1_account_id: str | None = os.getenv("D1_ACCOUNT_ID") or os.getenv("R2_ACCOUNT_ID") or None
+    d1_database_id: str | None = os.getenv("D1_DATABASE_ID") or None
+    d1_api_token: str | None = os.getenv("D1_API_TOKEN") or None
+    d1_table: str = os.getenv("D1_TABLE", "sedar_catalog")
+    # Push the mirror automatically whenever an enumerate finishes.
+    d1_auto_publish: bool = _bool("D1_AUTO_PUBLISH", True)
+
     # --- Alerts ---
     # Slack incoming-webhook URL. Set it to be told when a CAPTCHA wall stops the
     # queue; unset disables alerting entirely. Kept in env, never in the repo.
