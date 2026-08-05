@@ -564,6 +564,7 @@ def resolve_numbers(db: Session, driver, company_ids: list[int],
     floor = settings.resolve_min_similarity
     profiles.open_reporting_issuers(driver)
     resolved, suggested, missed, weak = 0, [], [], []
+    stale = 0  # consecutive companies whose search left the table unchanged
     for i, cid in enumerate(company_ids, start=1):
         company = db.get(Company, cid)
         if company is None or (company.number or "").strip():
@@ -588,15 +589,37 @@ def resolve_numbers(db: Session, driver, company_ids: list[int],
         sedar_name = (hit or {}).get("english_name") or ""
 
         if hit and hit.get("filter_failed"):
-            # The name filter did not take, so the rows on screen are the
-            # unfiltered list. Abort the whole run: every remaining lookup would
-            # score against the same wrong candidates, and quietly writing those
-            # numbers is the worst outcome available.
-            raise RuntimeError(
-                "the issuers-list name filter stopped working (results did not "
-                f"change when searching {company.name!r}) -- aborting before any "
-                "wrong numbers are written"
-            )
+            # The table did not change, so the rows on screen are stale and must
+            # not be scored. Usually the filter box just lost focus on one
+            # company; reload the list and give it one more go rather than
+            # discarding the other ninety-nine.
+            stale += 1
+            if stale >= 3:
+                raise RuntimeError(
+                    "the issuers-list name filter stopped responding for three "
+                    f"companies in a row (last: {company.name!r}) -- aborting "
+                    "before any wrong numbers are written"
+                )
+            print(f"[resolve] {company.name}: filter did not take; reloading list",
+                  flush=True)
+            hit = None
+            try:
+                profiles.open_reporting_issuers(driver)
+                for q in profiles.query_variants(company.name) or [company.name]:
+                    hit = profiles.find_number_by_name(driver, q, want=company.name)
+                    if hit and hit.get("filter_failed"):
+                        hit = None
+                        break
+                    if hit and (hit.get("number") or "").strip() and (hit.get("score") or 0) >= floor:
+                        break
+            except Exception as exc:
+                print(f"[resolve] {company.name} retry failed: {exc}", flush=True)
+                hit = None
+            number = (hit or {}).get("number", "").strip()
+            score = (hit or {}).get("score") or 0.0
+            sedar_name = (hit or {}).get("english_name") or ""
+        else:
+            stale = 0
 
         if hit and number and score >= floor:
             clash = db.scalar(select(Company).where(Company.number == number,
