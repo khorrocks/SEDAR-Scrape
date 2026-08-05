@@ -987,6 +987,75 @@ def admin_purge_local_archives(
     }
 
 
+@router.post("/admin/purge-companies")
+def purge_companies(
+    payload: dict | None = None,
+    x_admin_token: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """Delete catalog companies that hold no documents, keeping the ones that do.
+
+    For clearing an enumerate-derived catalog before importing a curated list.
+    Keeps any company with total_documents > 0; everything else goes, along with
+    its documents, batches and queue history (children first, for the foreign
+    keys). Dry run by default -- pass {"confirm": true} to actually delete.
+
+    Never touches R2. The archives for a purged company stay exactly where they
+    are; only this database's record of them is removed.
+    """
+    if not settings.admin_token:
+        raise HTTPException(403, "purge is disabled (set ADMIN_TOKEN to enable)")
+    if x_admin_token != settings.admin_token:
+        raise HTTPException(401, "invalid admin token")
+
+    keep_ids = [
+        c.id for c in db.scalars(select(Company).where(Company.total_documents > 0))
+    ]
+    if not keep_ids:
+        raise HTTPException(
+            409, "refusing to purge: no company has documents, which would delete "
+                 "the entire catalog -- use /admin/reset if that is the intent"
+        )
+    doomed = list(db.scalars(select(Company).where(Company.id.notin_(keep_ids))))
+    doomed_ids = [c.id for c in doomed]
+
+    if not (payload or {}).get("confirm"):
+        return {
+            "dry_run": True,
+            "would_delete": len(doomed_ids),
+            "would_keep": len(keep_ids),
+            "keeping": sorted(
+                (c.folder_slug or c.name) for c in
+                db.scalars(select(Company).where(Company.id.in_(keep_ids)))
+            ),
+            "note": "pass {\"confirm\": true} to apply; R2 is never touched",
+        }
+
+    n_docs = db.execute(delete(Document).where(Document.company_id.in_(doomed_ids))).rowcount
+    n_batches = db.execute(delete(Batch).where(Batch.company_id.in_(doomed_ids))).rowcount
+    n_jobs = db.execute(delete(Job).where(Job.company_id.in_(doomed_ids))).rowcount
+    n_companies = db.execute(delete(Company).where(Company.id.in_(doomed_ids))).rowcount
+    db.commit()
+
+    kept = list(db.scalars(select(Company)))
+    result = {
+        "purged": True,
+        "deleted": {"companies": n_companies, "documents": n_docs,
+                    "batches": n_batches, "jobs": n_jobs},
+        "remaining": len(kept),
+        "note": "R2 objects were not touched",
+    }
+    # Bring the mirror in line in the same breath, so the two never disagree.
+    try:
+        from . import d1
+
+        if d1.enabled():
+            result["d1"] = d1.prune_catalog([c.number for c in kept])
+    except Exception as exc:
+        result["d1_error"] = f"{exc}"
+    return result
+
+
 @router.post("/admin/reset")
 def admin_reset(
     x_admin_token: str | None = Header(default=None),

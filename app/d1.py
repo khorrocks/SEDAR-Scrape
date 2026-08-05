@@ -122,6 +122,38 @@ def _query(sql: str, params: list | None = None) -> dict:
     return payload
 
 
+def prune_catalog(keep_numbers: list) -> dict:
+    """Delete every mirror row whose SEDAR number is not in keep_numbers.
+
+    The mirror is a copy, so it has to be able to forget: publish_catalog only
+    upserts, and without this a company purged locally would linger in D1
+    forever and the two would silently disagree.
+
+    Note this deletes only from the mirror table -- `files`, `chunks`,
+    `entities` and `mentions` belong to the downstream stack and are never
+    touched. R2 is not involved at all.
+    """
+    table = settings.d1_table
+    keep = [str(n).strip() for n in keep_numbers if (n or "").strip()]
+    if not keep:
+        raise ValueError(
+            "refusing to prune with an empty keep-list (that would empty the mirror)"
+        )
+    kept = ", ".join(_lit(n) for n in keep)
+    before = _query(f"SELECT COUNT(*) AS n FROM {table}")
+    _query(f"DELETE FROM {table} WHERE sedar_number NOT IN ({kept})")
+    after = _query(f"SELECT COUNT(*) AS n FROM {table}")
+
+    def _count(payload):
+        try:
+            return payload["result"][0]["results"][0]["n"]
+        except Exception:
+            return None
+
+    return {"table": table, "before": _count(before), "after": _count(after),
+            "kept": len(keep)}
+
+
 def publish_catalog(companies: list, batch_size: int = 100) -> dict:
     """Upsert every company into the D1 mirror. Returns a summary.
 
