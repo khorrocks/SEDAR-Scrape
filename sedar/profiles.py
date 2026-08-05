@@ -163,6 +163,34 @@ def scrape_page(driver, col: dict[str, int] | None = None) -> list[dict]:
     return out
 
 
+def query_variants(name: str) -> list[str]:
+    """Progressively shorter search terms for one company name.
+
+    The filter box is a substring match, so a name the source truncated can
+    never match: "Alkane Resources Ltd" does not occur inside "Alkane Resources
+    Limited". Dropping trailing words turns the truncated tail into a prefix
+    that does match, and the caller still scores candidates against the full
+    original name, so a looser query cannot loosen the match test.
+    """
+    base = english_legal_name(name)
+    # Trailing single-letter markers ("Airboss of America J") are share-class
+    # noise from the source export, never part of the legal name.
+    base = re.sub(r"\s+[A-Z]$", "", base).strip()
+    words = [w for w in re.split(r"\s+", base) if w]
+    out: list[str] = []
+    for take in (len(words), 3, 2, 1):
+        if take < 1 or take > len(words):
+            continue
+        q = " ".join(words[:take]).strip(" ,.-&")
+        # A one-word query only helps when the word is distinctive enough that
+        # the results stay scannable.
+        if len(q) < (5 if take == 1 else 4):
+            continue
+        if q and q not in out:
+            out.append(q)
+    return out or ([base] if base else [])
+
+
 def _filter_box(driver):
     """The "Filter by name or profile number" input, or None."""
     for el in driver.find_elements(By.TAG_NAME, "input"):
@@ -243,7 +271,8 @@ def score_name(query: str, candidate: str) -> float:
     return ratio
 
 
-def find_number_by_name(driver, name: str, settle: float = 6.0) -> dict | None:
+def find_number_by_name(driver, name: str, settle: float = 6.0,
+                        want: str | None = None) -> dict | None:
     """Look up an issuer's SEDAR profile number from its name.
 
     Uses the Reporting Issuers List's "Filter by name or profile number" box and
@@ -287,7 +316,10 @@ def find_number_by_name(driver, name: str, settle: float = 6.0) -> dict | None:
     # confident-looking wrong number files one company's documents under
     # another. The exception is a genuinely strong hit, which cannot be a
     # coincidence of ordering.
-    if not changed and max(score_name(name, r.get("name", "")) for r in rows) < 0.9:
+    # Score against the caller's real company name, which may differ from the
+    # (possibly shortened) term actually typed into the box.
+    target = want or name
+    if not changed and max(score_name(target, r.get("name", "")) for r in rows) < 0.9:
         return {"filter_failed": True, "number": "", "score": 0.0,
                 "candidates": len(rows)}
 
@@ -295,7 +327,7 @@ def find_number_by_name(driver, name: str, settle: float = 6.0) -> dict | None:
     # first result wins -- that is the one the filter box considered best.
     best_i, best_score = 0, -1.0
     for i, r in enumerate(rows):
-        s = score_name(name, r.get("name", ""))
+        s = score_name(target, r.get("name", ""))
         if s > best_score:
             best_i, best_score = i, s
     best = rows[best_i]
@@ -306,6 +338,7 @@ def find_number_by_name(driver, name: str, settle: float = 6.0) -> dict | None:
         "match": "exact" if best_score >= 0.999 else "close",
         "rank": best_i + 1,
         "candidates": len(rows),
+        "query": name,
     }
 
 

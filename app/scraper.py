@@ -570,7 +570,17 @@ def resolve_numbers(db: Session, driver, company_ids: list[int],
             continue
         hit = None
         try:
-            hit = profiles.find_number_by_name(driver, company.name)
+            # Try the full name, then progressively shorter prefixes. Source
+            # names are frequently truncated ("Alkane Resources Ltd"), and the
+            # filter is a substring match, so the full name can be the one query
+            # guaranteed to return nothing. Candidates are always scored against
+            # the full name, so a looser query never loosens the match.
+            for q in profiles.query_variants(company.name) or [company.name]:
+                hit = profiles.find_number_by_name(driver, q, want=company.name)
+                if hit and hit.get("filter_failed"):
+                    break
+                if hit and (hit.get("number") or "").strip() and (hit.get("score") or 0) >= floor:
+                    break
         except Exception as exc:
             print(f"[resolve] {company.name}: {exc}", flush=True)
         number = (hit or {}).get("number", "").strip()
