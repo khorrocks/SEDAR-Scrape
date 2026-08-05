@@ -103,6 +103,15 @@ class Settings:
     auth_username: str | None = os.getenv("AUTH_USERNAME") or None
     auth_password: str | None = os.getenv("AUTH_PASSWORD") or None
 
+    # --- Name -> SEDAR number resolution ---
+    # Minimum 0..1 resemblance before a looked-up number is written. The filter
+    # box already narrows to near-matches, so this is a floor against nonsense
+    # rather than a strict test; below it the candidate is recorded for review.
+    resolve_min_similarity: float = float(os.getenv("RESOLVE_MIN_SIMILARITY", "0.55"))
+    # Matches accepted but scoring under this are also listed on the job, so the
+    # borderline ones can be skimmed without wading through the confident bulk.
+    resolve_review_below: float = float(os.getenv("RESOLVE_REVIEW_BELOW", "0.85"))
+
     # --- Cloudflare D1 (read-only catalog mirror) ---
     # The local DB stays authoritative; this is a published copy so the
     # Cloudflare-side stack can join name -> SEDAR number itself. Unset = no-op.

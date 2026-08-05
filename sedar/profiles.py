@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 import re
 import time
+from difflib import SequenceMatcher
 
 from selenium.webdriver.common.by import By
 
@@ -161,13 +162,60 @@ def scrape_page(driver, col: dict[str, int] | None = None) -> list[dict]:
     return out
 
 
+def english_legal_name(raw: str) -> str:
+    """The "Full legal company name in English" out of a SEDAR name cell.
+
+    SEDAR renders that column as "<English legal name> / <French legal name>",
+    which is why catalog entries look doubled -- "Quebec Innovative Materials
+    Corp. / Quebec Innovative Materials Corp." is one company, not two. Some
+    rows also carry a trailing "Operating name: ..." on either side.
+    """
+    s = (raw or "").split("/")[0]
+    s = re.split(r"operating\s+name\s*:", s, maxsplit=1, flags=re.IGNORECASE)[0]
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _norm_for_match(s: str) -> str:
+    """Normalise a name for comparison: English side only, no punctuation, no
+    corporate suffix. "ACME INC" and "Acme Inc. / Acme Inc." both reduce to
+    "acme"."""
+    s = english_legal_name(s).lower()
+    s = re.sub(r"[.,'\"]", " ", s)
+    s = re.sub(
+        r"\b(inc|ltd|ltee|limited|corp|corporation|co|company|plc|sa|lp|llc|"
+        r"holdings|group|the)\b",
+        " ", s,
+    )
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def score_name(query: str, candidate: str) -> float:
+    """0..1 resemblance between a stored name and a SEDAR row's name.
+
+    Sequence ratio, with a floor for the containment case: a truncated import
+    ("Aclara Res Inc. J") or a shortened form ("QUEBEC INNOVATIVE MATERIALS")
+    should still rank its full legal name highly.
+    """
+    a, b = _norm_for_match(query), _norm_for_match(candidate)
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    ratio = SequenceMatcher(None, a, b).ratio()
+    if a in b or b in a:
+        shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+        ratio = max(ratio, 0.75 + 0.25 * (len(shorter) / len(longer)))
+    return ratio
+
+
 def find_number_by_name(driver, name: str, settle: float = 6.0) -> dict | None:
     """Look up an issuer's SEDAR profile number from its name.
 
-    Uses the Reporting Issuers List's "Filter by name or profile number" box.
-    Returns the best row as a dict, or None. The caller decides whether the match
-    is good enough -- an exact-ish name check matters here, because a wrong
-    profile number silently attaches one company's filings to another.
+    Uses the Reporting Issuers List's "Filter by name or profile number" box and
+    returns the best-resembling row, scored, with the English legal name
+    extracted. The filter already narrows to near-matches, so the top row is
+    usually right -- but the score and rank come back with it so the caller can
+    decide, and so a weak match can be flagged rather than trusted silently.
     """
     typed = driver.execute_script(
         """const v = arguments[0];
@@ -192,20 +240,22 @@ def find_number_by_name(driver, name: str, settle: float = 6.0) -> dict | None:
     if not rows:
         return None
 
-    def norm(s: str) -> str:
-        s = (s or "").lower()
-        # SEDAR renders "Legal Name / Other Name"; compare on the first part and
-        # drop punctuation and common suffixes so "Inc." vs "Inc" still matches.
-        s = s.split("/")[0]
-        s = re.sub(r"[.,]", " ", s)
-        s = re.sub(r"\b(inc|ltd|limited|corp|corporation|co|company|plc|sa)\b", " ", s)
-        return re.sub(r"\s+", " ", s).strip()
-
-    want = norm(name)
-    for r in rows:
-        if norm(r.get("name", "")) == want:
-            return {**r, "match": "exact"}
-    return {**rows[0], "match": "first", "candidates": len(rows)}
+    # Rank every candidate; ties keep SEDAR's own ordering, so an equal-scoring
+    # first result wins -- that is the one the filter box considered best.
+    best_i, best_score = 0, -1.0
+    for i, r in enumerate(rows):
+        s = score_name(name, r.get("name", ""))
+        if s > best_score:
+            best_i, best_score = i, s
+    best = rows[best_i]
+    return {
+        **best,
+        "english_name": english_legal_name(best.get("name", "")),
+        "score": round(best_score, 3),
+        "match": "exact" if best_score >= 0.999 else "close",
+        "rank": best_i + 1,
+        "candidates": len(rows),
+    }
 
 
 def next_page(driver, settle: float = 8.0) -> bool:

@@ -547,13 +547,23 @@ def resolve_numbers(db: Session, driver, company_ids: list[int],
                     progress: ProgressFn | None = None) -> dict:
     """Fill in missing SEDAR numbers by looking each company up by name.
 
-    Only an exact normalised name match is accepted. A near-miss is recorded as
-    a suggestion for a human instead of being written: attaching the wrong
-    profile number silently files another company's documents under this one,
-    which is worse than leaving the field empty.
+    Takes the closest-resembling result rather than demanding an exact match:
+    the filter box has already narrowed to near-matches, so the top row is
+    usually the right company, and imported names are routinely abbreviated
+    ("QUEBEC INNOVATIVE MATERIALS") or truncated ("Aclara Res Inc. J") in ways
+    no exact test would ever accept.
+
+    On a match the company adopts SEDAR's full legal name in English, so the
+    catalog converges on SEDAR's own spelling instead of whatever a CSV held.
+
+    Two things still refuse to be guessed: a match below the similarity floor,
+    and a number already held by another company. Both are recorded for review
+    rather than written, because a wrong number files one company's documents
+    under another.
     """
+    floor = settings.resolve_min_similarity
     profiles.open_reporting_issuers(driver)
-    resolved, suggested, missed = 0, [], []
+    resolved, suggested, missed, weak = 0, [], [], []
     for i, cid in enumerate(company_ids, start=1):
         company = db.get(Company, cid)
         if company is None or (company.number or "").strip():
@@ -564,28 +574,44 @@ def resolve_numbers(db: Session, driver, company_ids: list[int],
         except Exception as exc:
             print(f"[resolve] {company.name}: {exc}", flush=True)
         number = (hit or {}).get("number", "").strip()
-        if hit and number and hit.get("match") == "exact":
+        score = (hit or {}).get("score") or 0.0
+        sedar_name = (hit or {}).get("english_name") or ""
+
+        if hit and number and score >= floor:
             clash = db.scalar(select(Company).where(Company.number == number,
                                                     Company.id != company.id))
             if clash is not None:
                 suggested.append({"id": cid, "name": company.name, "number": number,
-                                  "why": f"already used by {clash.name}"})
+                                  "score": score,
+                                  "why": f"number already used by {clash.name}"})
             else:
+                was = company.name
                 company.number = number
+                if sedar_name:
+                    company.name = sedar_name
                 company.jurisdiction = hit.get("jurisdiction") or company.jurisdiction
                 company.type = hit.get("type") or company.type
                 resolved += 1
                 db.commit()
+                # Confident matches are not worth listing one by one, but the
+                # borderline ones are exactly what a human should skim.
+                if score < settings.resolve_review_below:
+                    weak.append({"id": cid, "was": was, "now": sedar_name,
+                                 "number": number, "score": score,
+                                 "rank": hit.get("rank"),
+                                 "candidates": hit.get("candidates")})
         elif hit and number:
             suggested.append({"id": cid, "name": company.name, "number": number,
-                              "why": f"name differs: SEDAR has {hit.get('name')!r}"})
+                              "score": score,
+                              "why": f"too dissimilar; SEDAR's best was {sedar_name!r}"})
         else:
             missed.append({"id": cid, "name": company.name})
         if progress:
             progress(i, resolved, len(company_ids),
                      f"{i}/{len(company_ids)} checked, {resolved} resolved")
         time.sleep(2)
-    return {"resolved": resolved, "needs_review": suggested, "not_found": missed}
+    return {"resolved": resolved, "needs_review": suggested, "not_found": missed,
+            "low_confidence": weak}
 
 
 def enumerate_catalog(db: Session, driver, profile_type: str | None = "Company",

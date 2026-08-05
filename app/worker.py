@@ -516,13 +516,22 @@ def _run_job(job_id: int, holder: _DriverHolder) -> None:
             )
             review = result.get("needs_review") or []
             missed = result.get("not_found") or []
+            weak = result.get("low_confidence") or []
             job.message = (
                 f"{result.get('resolved', 0)} of {len(ids)} resolved; "
-                f"{len(review)} need review; {len(missed)} not found"
+                f"{len(weak)} low confidence; {len(review)} need review; "
+                f"{len(missed)} not found"
             )
             # Keep the detail queryable -- a near-miss is exactly what a human
             # has to adjudicate, and it is useless if it only lives in a log.
-            job.error = _json_dumps({"needs_review": review, "not_found": missed})[:4000]
+            # Truncate the lists, not the JSON, so it still parses.
+            job.error = _json_dumps({
+                "needs_review": review[:40],
+                "low_confidence": weak[:40],
+                "not_found": missed[:40],
+                "totals": {"needs_review": len(review), "low_confidence": len(weak),
+                           "not_found": len(missed)},
+            })[:4000]
             # Resolution is what makes a freshly imported company publishable at
             # all (the mirror is keyed on the SEDAR number), so push it now --
             # this is the step that re-links files already sitting in R2 to an
