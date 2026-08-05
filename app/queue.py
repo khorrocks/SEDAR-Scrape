@@ -167,6 +167,9 @@ def claim_next_job(db: Session) -> Job | None:
         return None
     job.status = JOB_RUNNING
     job.started_at = datetime.now(timezone.utc)
+    # Clear last attempt's diagnostics here, at the start, so a handler is free
+    # to write findings into `error` and have them survive completion.
+    job.error = None
     db.commit()
     db.refresh(job)
     return job
@@ -178,7 +181,12 @@ def finish_job(db: Session, job: Job, *, ok: bool, error: str | None = None) -> 
     if job.status == JOB_PAUSED:
         return
     job.status = JOB_DONE if ok else JOB_FAILED
-    job.error = error
+    # Only overwrite when there is something to say. Unconditionally assigning
+    # wiped whatever the handler had just recorded -- a resolve job's whole
+    # review list vanished the moment it succeeded. Stale detail is not a
+    # concern: start_job() clears it at the beginning of each attempt.
+    if error is not None:
+        job.error = error
     job.blocked = False
     job.finished_at = datetime.now(timezone.utc)
     db.commit()
