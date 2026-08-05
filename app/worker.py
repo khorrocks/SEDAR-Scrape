@@ -53,6 +53,32 @@ def _company_count(db) -> int:
     return db.scalar(select(func.count(Company.id))) or 0
 
 
+def _publish_d1(db, job) -> None:
+    """Refresh the D1 catalog mirror, best-effort.
+
+    Called after the jobs that change what the mirror should say: an enumerate
+    (new companies) and a resolve (new SEDAR numbers). The number matters
+    especially -- it is the mirror's primary key, so a company only becomes
+    publishable once it has one.
+
+    Deliberately swallows every error: a publish failure means a stale mirror,
+    and failing the scrape job that just succeeded over that would be backwards.
+    """
+    if not settings.d1_auto_publish:
+        return
+    try:
+        from . import d1
+
+        if not d1.enabled():
+            return
+        summary = d1.publish_catalog(list(db.scalars(select(Company))))
+        print(f"[worker] D1 mirror updated: {summary}", flush=True)
+        if job is not None:
+            job.message = (job.message or "") + f"; D1 mirror updated ({summary['published']})"
+    except Exception as exc:
+        print(f"[worker] D1 publish failed (mirror is stale): {exc}", flush=True)
+
+
 def _sleep_alive(seconds: float) -> None:
     """Sleep while telling the watchdog we are still healthy.
 
@@ -497,6 +523,11 @@ def _run_job(job_id: int, holder: _DriverHolder) -> None:
             # Keep the detail queryable -- a near-miss is exactly what a human
             # has to adjudicate, and it is useless if it only lives in a log.
             job.error = _json_dumps({"needs_review": review, "not_found": missed})[:4000]
+            # Resolution is what makes a freshly imported company publishable at
+            # all (the mirror is keyed on the SEDAR number), so push it now --
+            # this is the step that re-links files already sitting in R2 to an
+            # issuer the catalog had lost.
+            _publish_d1(db, job)
             db.commit()
             return
 
@@ -548,21 +579,7 @@ def _run_job(job_id: int, holder: _DriverHolder) -> None:
                     f"catalog now holds {_company_count(db)} companies "
                     f"({result['seen']} seen this pass)"
                 )
-                # Refresh the D1 mirror once the catalog is complete. Best-effort
-                # on purpose: a publish failure must not fail the enumerate that
-                # just succeeded, it only means the mirror is stale.
-                if settings.d1_auto_publish:
-                    try:
-                        from . import d1
-
-                        if d1.enabled():
-                            companies = list(db.scalars(select(Company)))
-                            summary = d1.publish_catalog(companies)
-                            print(f"[worker] D1 mirror updated: {summary}", flush=True)
-                            job.message += f"; D1 mirror updated ({summary['published']})"
-                    except Exception as exc:
-                        print(f"[worker] D1 publish failed (mirror is stale): {exc}",
-                              flush=True)
+                _publish_d1(db, job)
             db.commit()
             return
 
