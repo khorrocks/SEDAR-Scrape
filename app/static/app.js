@@ -16,7 +16,7 @@ const clip = (s, n = 280) => { s = String(s == null ? "" : s); return s.length >
 // --------------------------------------------------------------------------
 // Add a company (by exchange + ticker + SEDAR number)
 // --------------------------------------------------------------------------
-async function addByNumber() {
+async function addByNumber(download) {
   const number = el("add-number").value.trim();
   const name = el("add-name").value.trim();
   const exchange = el("add-exchange").value.trim();
@@ -31,26 +31,16 @@ async function addByNumber() {
     await api(`/companies/add`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ number, name: name || null, exchange, ticker, download: true }),
+      body: JSON.stringify({ number, name: name || null, exchange, ticker, download }),
     });
   } catch (e) { alert("Could not add company: " + e.message); return; }
   ["add-number", "add-name", "add-exchange", "add-ticker"].forEach((id) => (el(id).value = ""));
   refreshAll();
 }
 
-el("add-btn").addEventListener("click", addByNumber);
-
-el("enumerate-btn").addEventListener("click", async () => {
-  if (!confirm("Build/refresh the full company catalog? This is a long browser job that pages through every issuer. It may pause for a CAPTCHA — solve it in the live view and it keeps going.")) return;
-  try {
-    await api("/catalog/enumerate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ profile_type: "Company" }),
-    });
-  } catch (e) { alert("Could not queue enumeration: " + e.message); return; }
-  loadQueue();
-});
+el("add-btn").addEventListener("click", () => addByNumber(true));
+// Catalog it now, download later from the manager row.
+el("add-only-btn").addEventListener("click", () => addByNumber(false));
 
 el("clear-queue-btn").addEventListener("click", async () => {
   try { await api("/queue/clear", { method: "POST" }); }
@@ -75,32 +65,25 @@ el("enumerate-pause-btn").addEventListener("click", async (e) => {
   loadQueue();
 });
 
-// Reflect enumerate state on the controls: running -> Pause; paused -> Resume;
-// otherwise -> Build/refresh. Prevents double-queueing a second full run.
+// Surface an enumerate that is already running (queued via the API) so it can
+// still be paused. The catalog is maintained by CSV import and the add row now,
+// so there is no button here to start one.
 function updateEnumerateControls(jobs) {
   const running = jobs.find((j) => j.kind === "enumerate_catalog" && j.status === "running");
   const queued = jobs.find((j) => j.kind === "enumerate_catalog" && j.status === "queued");
   const paused = jobs.find((j) => j.kind === "enumerate_catalog" && j.status === "paused");
-  const btn = el("enumerate-btn");
   const pauseBtn = el("enumerate-pause-btn");
   const hint = el("enumerate-hint");
-  if (running || queued) {
-    btn.hidden = true;
-    pauseBtn.hidden = !running;
-    if (running) {
-      pauseBtn.dataset.jobId = running.id;
-      pauseBtn.disabled = !!running.pause_requested;
-    }
-    hint.textContent = running ? "running — " + clip(running.message || "…", 60) : "queued…";
+  pauseBtn.hidden = !running;
+  if (running) {
+    pauseBtn.dataset.jobId = running.id;
+    pauseBtn.disabled = !!running.pause_requested;
+    hint.textContent = "catalog enumeration running — " + clip(running.message || "…", 60);
+  } else if (queued) {
+    hint.textContent = "catalog enumeration queued…";
   } else if (paused) {
-    btn.hidden = false;
-    btn.textContent = "▶ Resume enumeration";
-    pauseBtn.hidden = true;
-    hint.textContent = "paused — " + clip(paused.message || "", 60);
+    hint.textContent = "catalog enumeration paused — " + clip(paused.message || "", 60);
   } else {
-    btn.hidden = false;
-    btn.textContent = "↻ Build / refresh company catalog";
-    pauseBtn.hidden = true;
     hint.textContent = "";
   }
 }
