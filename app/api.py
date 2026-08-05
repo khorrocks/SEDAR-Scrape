@@ -289,6 +289,20 @@ def import_companies(payload: dict, db: Session = Depends(get_db)):
             company = db.scalar(select(Company).where(Company.number == number))
         if company is None and name:
             company = db.scalar(select(Company).where(Company.name == name))
+        # Third key: the exchange+ticker slug. It names the R2 folder, so two
+        # companies sharing one is never valid -- they would write into the same
+        # place and both sides of the D1 join would match. An exact-name match
+        # misses here routinely, because the catalog stores SEDAR's doubled form
+        # ("Acme Inc. / Acme Inc.") while a CSV says "ACME INC".
+        exch = (row.get("exchange") or "").strip()
+        tick = (row.get("ticker") or "").strip()
+        if company is None and exch and tick:
+            company = db.scalar(
+                select(Company).where(
+                    func.lower(Company.exchange) == exch.lower(),
+                    func.lower(Company.ticker) == tick.lower(),
+                )
+            )
         if company is None:
             # NULL, not "": UNIQUE(number) collapses every "" into one value, so
             # storing blanks would reject the second numberless issuer.
@@ -316,6 +330,75 @@ def import_companies(payload: dict, db: Session = Depends(get_db)):
     ) or 0
     return {"created": created, "matched": matched, "skipped": skipped,
             "ids": touched, "missing_numbers": missing, "total": len(rows)}
+
+
+@router.get("/companies/duplicates")
+def find_duplicate_slugs(db: Session = Depends(get_db)):
+    """Companies sharing an exchange+ticker slug.
+
+    The slug names the R2 folder, so a shared one means two records pointing at
+    the same documents -- and both sides matching in the D1 join. Suggests
+    keeping whichever holds documents (or has a SEDAR number) and dropping the
+    rest, but decides nothing on its own.
+    """
+    groups: dict[str, list[Company]] = {}
+    for c in db.scalars(select(Company).where(Company.exchange.isnot(None),
+                                              Company.ticker.isnot(None))):
+        slug = c.folder_slug
+        if slug:
+            groups.setdefault(slug, []).append(c)
+
+    out = []
+    for slug, members in sorted(groups.items()):
+        if len(members) < 2:
+            continue
+        ranked = sorted(
+            members,
+            key=lambda c: (c.total_documents or 0, bool((c.number or "").strip())),
+            reverse=True,
+        )
+        out.append({
+            "slug": slug,
+            "keep": CompanyOut.model_validate(ranked[0]),
+            "duplicates": [CompanyOut.model_validate(c) for c in ranked[1:]],
+        })
+    return {"count": len(out), "groups": out}
+
+
+@router.post("/companies/bulk-delete")
+def bulk_delete_companies(payload: dict, db: Session = Depends(get_db)):
+    """Delete the given companies by id, refusing any that hold documents.
+
+    The guard is the point: this exists to remove duplicate/erroneous catalog
+    rows, and a record with documents is the one worth keeping in any collision.
+    Anything refused comes back in the response rather than failing the call, so
+    a mixed selection still does the safe part.
+
+    Never touches R2.
+    """
+    ids = [int(i) for i in (payload.get("ids") or [])]
+    if not ids:
+        raise HTTPException(400, "no ids given")
+
+    doomed, refused = [], []
+    for c in db.scalars(select(Company).where(Company.id.in_(ids))):
+        held = db.scalar(
+            select(func.count(Document.id)).where(Document.company_id == c.id)
+        ) or 0
+        if held or (c.total_documents or 0) > 0:
+            refused.append({"id": c.id, "name": c.name,
+                            "reason": f"holds {held or c.total_documents} document(s)"})
+        else:
+            doomed.append(c.id)
+
+    n_batches = n_jobs = n_companies = 0
+    if doomed:
+        n_batches = db.execute(delete(Batch).where(Batch.company_id.in_(doomed))).rowcount
+        n_jobs = db.execute(delete(Job).where(Job.company_id.in_(doomed))).rowcount
+        n_companies = db.execute(delete(Company).where(Company.id.in_(doomed))).rowcount
+        db.commit()
+    return {"deleted": n_companies, "batches": n_batches, "jobs": n_jobs,
+            "refused": refused, "note": "R2 objects were not touched"}
 
 
 @router.post("/companies/resolve-numbers", response_model=JobOut)
