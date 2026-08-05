@@ -108,13 +108,23 @@ async function loadStats() {
 // counting duplicate rows as separate filings, so anything within the tolerance
 // reads as in sync; a real shortfall stays loud.
 const SYNC_TOLERANCE = 5;
+
+// True when we hold everything SEDAR+ reports (within tolerance) and are not
+// paused. Such a company has nothing left to download -- only new filings to
+// check for -- so the row hides its Download button.
+function isInSync(c) {
+  if (!c.reported_total || c.paused) return false;
+  const missing = Math.max(0, c.reported_total - (c.total_documents || 0));
+  return !!c.is_complete || missing <= SYNC_TOLERANCE;
+}
+
 function coverageLabel(c) {
   const held = c.total_documents || 0;
   const paused = c.paused ? `<span class="cov paused">⏸ PAUSED</span> ` : "";
   if (!c.reported_total) return `${paused}${held} document(s) downloaded`;
   if (c.paused) return `${paused}${held}/${c.reported_total} held`;
   const missing = Math.max(0, c.reported_total - held);
-  return (c.is_complete || missing <= SYNC_TOLERANCE)
+  return isInSync(c)
     ? `<span class="cov ok">✓ In Sync</span>`
     : `<span class="cov warn">${held}/${c.reported_total} — ${missing} missing</span>`;
 }
@@ -250,7 +260,8 @@ async function loadManager() {
                      placeholder="—" title="Ticker" /></span>
         <span class="cov-cell">${coverageLabel(c)} ${flags.join(" ")}</span>
         <span class="row-actions">
-          <button class="ghost tiny" data-download="${c.id}" ${c.paused ? "disabled" : ""}>Download</button>
+          ${isInSync(c) ? "" :
+            `<button class="ghost tiny" data-download="${c.id}" ${c.paused ? "disabled" : ""}>Download</button>`}
           <button class="ghost tiny" data-recheck="${c.id}" ${c.paused ? "disabled" : ""}>Check new</button>
           <button class="ghost tiny ${c.paused ? "unpause" : ""}" data-pause="${c.id}"
                   data-on="${c.paused ? 1 : 0}">${c.paused ? "▶ Unpause" : "⏸ Pause"}</button>
