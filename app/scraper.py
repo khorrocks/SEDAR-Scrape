@@ -217,6 +217,15 @@ def resolve_profile(driver, company: Company) -> bool:
         docs.run_search(driver)
         return True
 
+    # A CSV import can create a company before its SEDAR number is known. Say so
+    # plainly here rather than letting an empty search box fail three screens
+    # later looking like a bot wall.
+    if not (company.number or "").strip():
+        raise RuntimeError(
+            f"{company.name} has no SEDAR number yet -- run 'Resolve numbers' "
+            f"before downloading"
+        )
+
     # Enumerated companies only have a Number: drive the documents search from
     # it (bootstrap session -> searchDocuments -> 'Profile name or number').
     if lookup.open_documents_by_number(driver, company.number):

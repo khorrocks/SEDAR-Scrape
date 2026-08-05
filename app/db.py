@@ -4,6 +4,7 @@ simpler and avoids mixing async with the blocking browser code."""
 
 from __future__ import annotations
 
+import re
 from contextlib import contextmanager
 from typing import Iterator
 
@@ -57,6 +58,94 @@ _ADDED_COLUMNS = {
 }
 
 
+def _relax_company_number(insp) -> None:
+    """Make companies.number nullable, converting existing "" to NULL.
+
+    A CSV import creates issuers whose SEDAR number is not known yet. The old
+    schema declared the column NOT NULL, so those rows were stored as "" -- and
+    UNIQUE(number) treats every "" as the same value, so the second numberless
+    issuer failed the whole import. NULLs are distinct under UNIQUE on both
+    SQLite and Postgres, so nullable is what the column always should have been.
+
+    SQLite cannot ALTER a column, so the table is rebuilt. Two things this must
+    not assume:
+
+      * that DDL rolls back -- pysqlite quietly commits CREATE/ALTER/DROP even
+        inside a transaction, so a failure mid-way cannot be undone. The order
+        below is therefore build-verify-swap: the original table is only dropped
+        after the copy has been made AND its row count checked, so any failure
+        leaves the original intact and merely strands a scratch table;
+      * that the model's CREATE TABLE can hold the old rows. It cannot -- older
+        rows predate columns that are now NOT NULL (paused, saved), so copying
+        into a model-generated table fails on them. Reusing the live table's own
+        definition with just the one NOT NULL removed keeps the copy total.
+    """
+    if "companies" not in set(insp.get_table_names()):
+        return
+    cols = {c["name"]: c for c in insp.get_columns("companies")}
+    if "number" not in cols or cols["number"].get("nullable", True):
+        return  # already nullable, nothing to do
+
+    if not engine.url.get_backend_name().startswith("sqlite"):
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE companies ALTER COLUMN number DROP NOT NULL"))
+            conn.execute(text("UPDATE companies SET number = NULL WHERE number = ''"))
+        print("[db] migrated: companies.number is now nullable", flush=True)
+        return
+
+    with engine.begin() as conn:
+        old_sql = conn.execute(
+            text("SELECT sql FROM sqlite_master WHERE type='table' AND name='companies'")
+        ).scalar()
+        index_sqls = conn.execute(
+            text(
+                "SELECT sql FROM sqlite_master WHERE type='index' "
+                "AND tbl_name='companies' AND sql IS NOT NULL"
+            )
+        ).scalars().all()
+    if not old_sql:
+        return
+
+    # Drop NOT NULL from the number column only, leaving every other column
+    # definition byte-for-byte as it is.
+    new_sql, n = re.subn(
+        r'("?number"?\s+[A-Za-z0-9_()]+)\s+NOT\s+NULL',
+        r"\1", old_sql, count=1, flags=re.IGNORECASE,
+    )
+    if not n:
+        print("[db] companies.number: could not locate NOT NULL, leaving as is", flush=True)
+        return
+    new_sql = re.sub(
+        r'^(CREATE\s+TABLE\s+)"?companies"?', r"\1companies_rebuild",
+        new_sql, count=1, flags=re.IGNORECASE,
+    )
+    shared = ", ".join(f'"{c}"' for c in cols)
+    select_list = ", ".join(
+        "NULLIF(number, '')" if c == "number" else f'"{c}"' for c in cols
+    )
+
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS companies_rebuild"))
+        conn.execute(text(new_sql))
+        conn.execute(
+            text(f"INSERT INTO companies_rebuild ({shared}) SELECT {select_list} FROM companies")
+        )
+        before = conn.execute(text("SELECT COUNT(*) FROM companies")).scalar()
+        after = conn.execute(text("SELECT COUNT(*) FROM companies_rebuild")).scalar()
+        if before != after:
+            conn.execute(text("DROP TABLE IF EXISTS companies_rebuild"))
+            raise RuntimeError(
+                f"companies rebuild copied {after} of {before} rows; original left untouched"
+            )
+        # Only now is it safe to swap. Dropping the original also drops its
+        # indexes, freeing their names for the recreate below.
+        conn.execute(text("DROP TABLE companies"))
+        conn.execute(text("ALTER TABLE companies_rebuild RENAME TO companies"))
+        for sql in index_sqls:
+            conn.execute(text(sql))
+    print(f"[db] migrated: companies.number is now nullable ({after} rows)", flush=True)
+
+
 def _migrate() -> None:
     insp = inspect(engine)
     existing_tables = set(insp.get_table_names())
@@ -68,6 +157,14 @@ def _migrate() -> None:
             for name, ddl in columns.items():
                 if name not in have:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+    # Re-inspect: the rebuild below copies whatever columns now exist. Guarded
+    # because the web process and the worker both call init_db() at boot -- if
+    # they race, the loser must log and move on rather than crash the container.
+    # The whole rebuild is one transaction, so a loser leaves nothing behind.
+    try:
+        _relax_company_number(inspect(engine))
+    except Exception as exc:
+        print(f"[db] companies.number migration skipped: {exc}", flush=True)
 
 
 @contextmanager

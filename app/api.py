@@ -290,7 +290,10 @@ def import_companies(payload: dict, db: Session = Depends(get_db)):
         if company is None and name:
             company = db.scalar(select(Company).where(Company.name == name))
         if company is None:
-            company = Company(number=number, name=name or number, type="(imported)")
+            # NULL, not "": UNIQUE(number) collapses every "" into one value, so
+            # storing blanks would reject the second numberless issuer.
+            company = Company(number=number or None, name=name or number,
+                              type="(imported)")
             db.add(company)
             created += 1
         else:

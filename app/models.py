@@ -58,7 +58,11 @@ class Company(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     # SEDAR+ issuer number, e.g. "000003771" -- the stable key from enumeration.
-    number: Mapped[str] = mapped_column(String(32))
+    # NULL means "not known yet", which a CSV import creates in bulk and
+    # KIND_RESOLVE fills in later. It must be NULL rather than "" because the
+    # unique constraint above treats every "" as the same value and would reject
+    # the second numberless issuer, while NULLs are distinct under UNIQUE.
+    number: Mapped[str | None] = mapped_column(String(32), nullable=True)
     name: Mapped[str] = mapped_column(String(512))
     jurisdiction: Mapped[str | None] = mapped_column(String(128), nullable=True)
     type: Mapped[str | None] = mapped_column(String(64), nullable=True)
