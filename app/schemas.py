@@ -11,7 +11,9 @@ class CompanyOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    number: str
+    # None until resolved: a CSV import creates issuers before their SEDAR
+    # number is known. Required here would 500 the whole listing on one such row.
+    number: str | None = None
     name: str
     jurisdiction: str | None = None
     type: str | None = None
