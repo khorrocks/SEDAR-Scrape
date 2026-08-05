@@ -53,6 +53,28 @@ def _company_count(db) -> int:
     return db.scalar(select(func.count(Company.id))) or 0
 
 
+def _publish_filings(db) -> None:
+    """Push filing dates to the mirror after a download, best-effort.
+
+    New documents mean new (company, filing_id) pairs, and the archives in R2
+    carry PDFs only -- without this the downstream ingest gets files it cannot
+    date. Never allowed to fail the download that just succeeded.
+    """
+    if not settings.d1_auto_publish:
+        return
+    try:
+        from . import d1
+        from .api import _filing_rows
+
+        if not d1.enabled():
+            return
+        rows = _filing_rows(db)
+        if rows:
+            print(f"[worker] D1 filings: {d1.publish_filings(rows)}", flush=True)
+    except Exception as exc:
+        print(f"[worker] D1 filing publish failed: {exc}", flush=True)
+
+
 def _publish_d1(db, job) -> None:
     """Refresh the D1 catalog mirror, best-effort.
 
@@ -630,6 +652,8 @@ def _run_job(job_id: int, holder: _DriverHolder) -> None:
             + (f" ({'; '.join(flags)})" if flags else "")
         )
         db.commit()
+        if result.get("new_documents"):
+            _publish_filings(db)
 
 
 def run_forever() -> None:

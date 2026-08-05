@@ -473,6 +473,73 @@ def publish_catalog_to_d1(db: Session = Depends(get_db)):
         raise HTTPException(502, f"D1 publish failed: {exc}")
 
 
+def _filing_rows(db: Session) -> list[dict]:
+    """Collapse held documents to one row per (company slug, filing id).
+
+    Several documents share a filing, and the date belongs to the filing, so the
+    rows are deduped on that key. The first parseable date wins; ties are not
+    worth agonising over because they come from the same SEDAR row.
+    """
+    from .filings import filing_id_from_member, parse_submitted
+
+    out: dict[tuple[str, str], dict] = {}
+    stmt = (
+        select(Document, Company)
+        .join(Company, Document.company_id == Company.id)
+        .order_by(Document.company_id.asc(), Document.id.asc())
+    )
+    for d, c in db.execute(stmt):
+        slug = c.folder_slug
+        fid = filing_id_from_member(d.archive_member)
+        if not slug or not fid:
+            continue
+        key = (slug, fid)
+        if key in out and out[key].get("filing_date"):
+            continue
+        date, stamp = parse_submitted(d.submitted)
+        out[key] = {
+            "company": slug, "filing_id": fid,
+            "filing_date": date, "filing_timestamp": stamp,
+            "sedar_number": c.number, "sample_title": d.title,
+        }
+    return list(out.values())
+
+
+@router.get("/export/filings")
+def export_filings(fmt: str = Query("json", pattern="^(csv|json)$"),
+                   db: Session = Depends(get_db)):
+    """Filing dates keyed (company, filing_id) -- the same shape published to D1."""
+    rows = _filing_rows(db)
+    if fmt == "json":
+        return rows
+    return _csv_response(
+        [["company", "filing_id", "filing_date", "filing_timestamp",
+          "sedar_number", "sample_title"]]
+        + [[r["company"], r["filing_id"], r.get("filing_date") or "",
+            r.get("filing_timestamp") or "", r.get("sedar_number") or "",
+            r.get("sample_title") or ""] for r in rows],
+        "sedar-filings.csv",
+    )
+
+
+@router.post("/filings/publish")
+def publish_filings_to_d1(db: Session = Depends(get_db)):
+    """Publish filing dates to the D1 mirror so R2-side ingests can bind them."""
+    from . import d1
+
+    if not d1.enabled():
+        raise HTTPException(503, "D1 is not configured")
+    rows = _filing_rows(db)
+    if not rows:
+        return {"published": 0, "note": "no held documents to publish"}
+    try:
+        result = d1.publish_filings(rows)
+    except Exception as exc:
+        raise HTTPException(502, f"D1 publish failed: {exc}")
+    result["without_date"] = sum(1 for r in rows if not r.get("filing_date"))
+    return result
+
+
 @router.get("/catalog/stats")
 def catalog_stats(db: Session = Depends(get_db)):
     total = db.scalar(select(func.count(Company.id)))

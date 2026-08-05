@@ -122,6 +122,68 @@ def _query(sql: str, params: list | None = None) -> dict:
     return payload
 
 
+_CREATE_FILINGS = """
+CREATE TABLE IF NOT EXISTS {table} (
+  company          TEXT NOT NULL,
+  filing_id        TEXT NOT NULL,
+  filing_date      TEXT,
+  filing_timestamp TEXT,
+  sedar_number     TEXT,
+  sample_title     TEXT,
+  updated_at       TEXT,
+  PRIMARY KEY (company, filing_id)
+)
+"""
+
+_UPSERT_FILINGS = """
+INSERT INTO {table}
+  (company, filing_id, filing_date, filing_timestamp, sedar_number, sample_title, updated_at)
+VALUES {values}
+ON CONFLICT(company, filing_id) DO UPDATE SET
+  filing_date = excluded.filing_date,
+  filing_timestamp = excluded.filing_timestamp,
+  sedar_number = excluded.sedar_number,
+  sample_title = excluded.sample_title,
+  updated_at = excluded.updated_at
+"""
+
+
+def publish_filings(rows: list, batch_size: int = 50) -> dict:
+    """Publish (company, filing_id) -> filing date into the mirror.
+
+    Keyed on the filing rather than the file on purpose: a filing date belongs
+    to the filing, and one filing routinely contains several documents. That
+    also makes the join numeric -- `files.filing_id` already holds this value --
+    so nothing depends on filenames or character encoding agreeing.
+
+    Writes only its own table. `files` belongs to the downstream stack and is
+    never touched here; they decide whether to copy the date across or join it
+    at read time.
+    """
+    table = settings.d1_filings_table
+    _query(_CREATE_FILINGS.format(table=table))
+
+    now = datetime.now(timezone.utc).isoformat()
+    sent = 0
+    for start in range(0, len(rows), batch_size):
+        chunk = rows[start : start + batch_size]
+        values = ", ".join(
+            "("
+            + ", ".join(
+                _lit(v) for v in (
+                    r["company"], r["filing_id"], r.get("filing_date"),
+                    r.get("filing_timestamp"), r.get("sedar_number"),
+                    (r.get("sample_title") or "")[:300], now,
+                )
+            )
+            + ")"
+            for r in chunk
+        )
+        _query(_UPSERT_FILINGS.format(table=table, values=values))
+        sent += len(chunk)
+    return {"published": sent, "table": table, "updated_at": now}
+
+
 def prune_catalog(keep_numbers: list) -> dict:
     """Delete every mirror row whose SEDAR number is not in keep_numbers.
 

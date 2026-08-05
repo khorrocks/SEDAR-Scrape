@@ -124,6 +124,9 @@ class Settings:
     )
     d1_api_token: str | None = os.getenv("D1_API_TOKEN") or None
     d1_table: str = os.getenv("D1_TABLE", "sedar_catalog")
+    # Filing dates, keyed (company, filing_id), for the downstream ingest to
+    # bind to files it reads from R2 -- the archives carry PDFs only.
+    d1_filings_table: str = os.getenv("D1_FILINGS_TABLE", "sedar_filings")
     # Push the mirror automatically whenever an enumerate finishes.
     d1_auto_publish: bool = _bool("D1_AUTO_PUBLISH", True)
 
